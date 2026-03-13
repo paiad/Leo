@@ -158,6 +158,12 @@ class ManusRuntime:
                 "page",
                 "navigate",
                 "click",
+                "play",
+                "music",
+                "song",
+                "video",
+                "audio",
+                "player",
                 "form",
                 "截图",
                 "网页",
@@ -165,6 +171,14 @@ class ManusRuntime:
                 "浏览器",
                 "打开网页",
                 "页面",
+                "播放",
+                "歌曲",
+                "音乐",
+                "视频",
+                "音频",
+                "播放器",
+                "暂停",
+                "继续播放",
             }
         return aliases
 

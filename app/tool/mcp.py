@@ -133,6 +133,32 @@ class MCPClients(ToolCollection):
     def _mark_disconnected(self, server_id: str) -> None:
         self._connection_order = [sid for sid in self._connection_order if sid != server_id]
 
+    @staticmethod
+    def _augment_playwright_tool_description(
+        server_id: str, tool_name: str, description: str | None
+    ) -> str:
+        """
+        Add actionable fallback guidance for Playwright MCP browser controls.
+        This improves success rate on media players where visible controls are
+        often shadowed/overlaid and cannot be clicked directly.
+        """
+        if server_id != "playwright":
+            return description or ""
+
+        if not tool_name.startswith("browser_"):
+            return description or ""
+
+        base = description or ""
+        guidance = (
+            "\n\nPlaywright reliability notes for media controls:\n"
+            "- Before clicking, call browser_snapshot to get the latest element refs.\n"
+            "- If play/pause button is not clickable, focus the player area then try browser_press_key with Space or k.\n"
+            "- If keyboard still fails, use browser_evaluate on page to run a fallback script that finds <audio>/<video> and calls play().\n"
+            "- After each action, verify state change (timeline/progress/time text) instead of assuming success.\n"
+            "- Prefer retrying with a fresh snapshot over repeated blind clicks.\n"
+        )
+        return f"{base}{guidance}"
+
     def _disconnect_all_server_ids(self) -> list[str]:
         """
         Return server IDs in safe disconnect order.
@@ -234,10 +260,15 @@ class MCPClients(ToolCollection):
             original_name = tool.name
             tool_name = f"mcp_{server_id}_{original_name}"
             tool_name = self._sanitize_tool_name(tool_name)
+            description = self._augment_playwright_tool_description(
+                server_id=server_id,
+                tool_name=original_name,
+                description=tool.description,
+            )
 
             server_tool = MCPClientTool(
                 name=tool_name,
-                description=tool.description,
+                description=description,
                 parameters=tool.inputSchema,
                 session=session,
                 server_id=server_id,
