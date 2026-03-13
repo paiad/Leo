@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 244 247 250;
+  --foreground: 15 23 42;
+  --card: 255 255 255;
+  --card-foreground: 15 23 42;
+  --muted: 241 245 249;
+  --muted-foreground: 100 116 139;
+  --border: 226 232 240;
+  --sidebar: 248 250 252;
+  --sidebar-foreground: 15 23 42;
+  --sidebar-muted: 241 245 249;
+  --primary: 15 23 42;
+  --primary-foreground: 255 255 255;
+  --accent: 59 130 246;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  color: rgb(var(--foreground));
+  background: rgb(var(--background));
+  font-family: var(--font-sans), sans-serif;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.42);
+}
+
+@layer utilities {
+  .bg-app {
+    background:
+      linear-gradient(180deg, rgba(244, 247, 250, 1), rgba(241, 245, 249, 1));
+  }
+}
