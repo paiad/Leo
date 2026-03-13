@@ -225,6 +225,37 @@ class ManusRuntime:
             return prompt
         return f"{prompt}\n\n{catalog}"
 
+    @staticmethod
+    def _select_final_assistant_text(messages: list[Any]) -> str | None:
+        """
+        Select user-facing final text from agent memory.
+
+        Prefer assistant messages that do not contain tool calls. This avoids
+        leaking intermediate "thought" content attached to tool-call messages.
+        """
+        fallback_texts: list[str] = []
+        final_texts: list[str] = []
+
+        for message in messages:
+            role = getattr(message, "role", None)
+            role_value = getattr(role, "value", role)
+            content = getattr(message, "content", None)
+            if role_value != "assistant" or not isinstance(content, str):
+                continue
+            text = content.strip()
+            if not text:
+                continue
+            fallback_texts.append(text)
+            tool_calls = getattr(message, "tool_calls", None)
+            if not tool_calls:
+                final_texts.append(text)
+
+        if final_texts:
+            return final_texts[-1]
+        if fallback_texts:
+            return fallback_texts[-1]
+        return None
+
     def _should_connect_server(self, prompt: str, server: Any) -> bool:
         prompt_text = self._normalize_text(self._extract_current_user_request(prompt))
         if not prompt_text:
@@ -415,14 +446,8 @@ class ManusRuntime:
                 run_invoked = True
                 raw = await agent.run(run_prompt)
 
-            assistant_messages: list[str] = []
-            for message in agent.messages:
-                role = getattr(message, "role", None)
-                content = getattr(message, "content", None)
-                role_value = getattr(role, "value", role)
-                if role_value == "assistant" and isinstance(content, str) and content.strip():
-                    assistant_messages.append(content)
-            if assistant_messages:
+            final_text = self._select_final_assistant_text(agent.messages)
+            if final_text is not None:
                 if progress_callback:
                     try:
                         maybe_awaitable = progress_callback(
@@ -436,7 +461,7 @@ class ManusRuntime:
                             await maybe_awaitable
                     except Exception as exc:
                         logger.debug(f"Failed to emit runtime_done progress: {exc}")
-                return assistant_messages[-1]
+                return final_text
             return raw
         finally:
             # agent.run() already performs cleanup in ToolCallAgent.run().

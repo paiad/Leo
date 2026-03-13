@@ -206,12 +206,86 @@ class ChatService:
         session: SessionRecord,
         user_text: str,
         workspace_prompt: str | None,
+        *,
+        source: str,
     ) -> str:
         prompt = self.build_prompt(user_text, workspace_prompt)
+        output_policy = (
+            self._build_output_policy_text(source=source, session_id=session.id)
+            if self._should_apply_output_policy(user_text)
+            else ""
+        )
+        if output_policy:
+            prompt = f"{prompt}\n\n{output_policy}"
         history_context = self._format_history_context(session, prompt)
         if not history_context:
             return prompt
         return history_context
+
+    def _source_key(self, source: str) -> str:
+        return "lark" if source == "lark" else "browser"
+
+    def _session_output_dir(self, *, source: str, session_id: str) -> Path:
+        source_key = self._source_key(source)
+        date_str = datetime.now(self._record_tz).strftime("%Y-%m-%d")
+        return Path(config.workspace_root) / "generated" / source_key / session_id / date_str
+
+    def _should_apply_output_policy(self, user_text: str) -> bool:
+        # Explicit runtime overrides.
+        if self._is_truthy_env(os.getenv("BFF_CHAT_DISABLE_FILE_OUTPUT_POLICY")):
+            return False
+        if self._is_truthy_env(os.getenv("BFF_CHAT_FORCE_FILE_OUTPUT_POLICY")):
+            return True
+
+        text = (user_text or "").strip().lower()
+        if not text:
+            return False
+
+        # Only enforce file-output constraints for artifact-style requests.
+        artifact_markers = (
+            "save ",
+            "write to file",
+            "create file",
+            "export",
+            "download",
+            "pdf",
+            "ppt",
+            "excel",
+            "csv",
+            "docx",
+            "png",
+            "jpg",
+            "jpeg",
+            "svg",
+            "mp4",
+            "zip",
+            "保存",
+            "存储",
+            "文件",
+            "导出",
+            "下载",
+            "生成图片",
+            "生成文件",
+            "输出到",
+            "写入文件",
+            "图片",
+            "海报",
+            "视频",
+        )
+        return any(marker in text for marker in artifact_markers)
+
+    def _build_output_policy_text(self, *, source: str, session_id: str) -> str:
+        output_dir = self._session_output_dir(source=source, session_id=session_id)
+        relative_dir = output_dir.relative_to(config.workspace_root)
+        return (
+            "[File Output Policy]\n"
+            f"- Save all newly generated files under: {output_dir}\n"
+            f"- Relative path from workspace root: {relative_dir}\n"
+            "- Do not write generated deliverables to logs/.\n"
+            "- For image requests, include a directly viewable Markdown image in the final answer: ![alt](http/https-image-url).\n"
+            "- Do not reply with only a local file path for image requests; file path is supplemental only.\n"
+            "- For non-image generated files, include the relative file path(s) in the final answer."
+        )
 
     @staticmethod
     def platform_prompt() -> str:
@@ -266,10 +340,14 @@ class ChatService:
             raise ValueError("content 不能为空")
 
         session = await self._append_user_message(payload.sessionId, user_text)
+        self._session_output_dir(source=payload.source, session_id=session.id).mkdir(
+            parents=True, exist_ok=True
+        )
         runtime_prompt = self._build_runtime_prompt(
             session,
             user_text,
             payload.workspacePrompt,
+            source=payload.source,
         )
         response_text = await self._runtime.ask(
             runtime_prompt
@@ -305,6 +383,9 @@ class ChatService:
             return
 
         session = await self._append_user_message(payload.sessionId, user_text)
+        self._session_output_dir(source=payload.source, session_id=session.id).mkdir(
+            parents=True, exist_ok=True
+        )
         progress_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         has_persisted_response = False
 
@@ -358,6 +439,7 @@ class ChatService:
                         session,
                         user_text,
                         payload.workspacePrompt,
+                        source=payload.source,
                     ),
                     progress_callback=on_runtime_event,
                 )
@@ -429,8 +511,9 @@ class ChatService:
 
         now_local = datetime.now(self._record_tz)
         date_str = now_local.strftime("%Y-%m-%d")
-        record_path = self._record_root / f"{date_str}.json"
         source_key = "lark" if source == "lark" else "browser"
+        source_root = self._record_root / source_key
+        record_path = source_root / f"{date_str}.json"
 
         entry = {
             "id": new_id(),
@@ -442,7 +525,7 @@ class ChatService:
         }
 
         async with self._record_lock:
-            self._record_root.mkdir(parents=True, exist_ok=True)
+            source_root.mkdir(parents=True, exist_ok=True)
             payload: dict[str, Any]
             if record_path.exists():
                 try:
@@ -452,19 +535,15 @@ class ChatService:
             else:
                 payload = {}
 
-            sources = payload.get("sources")
-            if not isinstance(sources, dict):
-                sources = {"lark": [], "browser": []}
-            if not isinstance(sources.get("lark"), list):
-                sources["lark"] = []
-            if not isinstance(sources.get("browser"), list):
-                sources["browser"] = []
-
-            sources[source_key].append(entry)
+            entries = payload.get("entries")
+            if not isinstance(entries, list):
+                entries = []
+            entries.append(entry)
             payload["date"] = date_str
             payload["timezone"] = "Asia/Shanghai"
             payload["version"] = 1
-            payload["sources"] = sources
+            payload["source"] = source_key
+            payload["entries"] = entries
 
             record_path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2),
