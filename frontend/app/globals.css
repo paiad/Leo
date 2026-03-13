@@ -1,0 +1,100 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 244 247 250;
+  --foreground: 15 23 42;
+  --card: 255 255 255;
+  --card-foreground: 15 23 42;
+  --muted: 241 245 249;
+  --muted-foreground: 100 116 139;
+  --border: 226 232 240;
+  --sidebar: 248 250 252;
+  --sidebar-foreground: 15 23 42;
+  --sidebar-muted: 241 245 249;
+  --primary: 15 23 42;
+  --primary-foreground: 255 255 255;
+  --accent: 59 130 246;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  color: rgb(var(--foreground));
+  background:
+    radial-gradient(1200px 600px at 0% -10%, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0)),
+    radial-gradient(900px 500px at 100% 0%, rgba(236, 241, 248, 0.72), rgba(255, 255, 255, 0)),
+    rgb(var(--background));
+  font-family:
+    "SF Pro Display",
+    "SF Pro Text",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Helvetica Neue",
+    "PingFang SC",
+    "Microsoft YaHei",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.42);
+}
+
+@layer utilities {
+  .bg-app {
+    background:
+      linear-gradient(180deg, rgba(244, 247, 250, 1), rgba(241, 245, 249, 1));
+  }
+
+  .apple-shell {
+    @apply rounded-[28px] border border-slate-200/80 bg-white shadow-[0_10px_40px_-28px_rgba(15,23,42,0.2)];
+  }
+
+  .apple-surface {
+    @apply rounded-3xl border border-slate-200/80 bg-white shadow-[0_1px_0_rgba(255,255,255,0.8)_inset,0_12px_28px_-26px_rgba(15,23,42,0.22)];
+  }
+
+  .apple-card {
+    @apply rounded-2xl border border-slate-200/80 bg-white/90 shadow-[0_12px_28px_-26px_rgba(15,23,42,0.35)];
+  }
+
+  .apple-muted {
+    @apply text-[15px] leading-7 text-slate-500;
+  }
+}
