@@ -6,6 +6,7 @@ allowing interactive command execution with timeout control.
 """
 
 import asyncio
+import errno
 import re
 import socket
 from typing import Dict, Optional, Tuple, Union
@@ -64,13 +65,33 @@ class DockerSession:
             self.exec_id, socket=True, tty=True, stream=True, demux=True
         )
 
+        # Linux usually returns a wrapper with `_sock`, while Windows/npipe can
+        # return a socket-like object directly.
         if hasattr(socket_data, "_sock"):
             self.socket = socket_data._sock
-            self.socket.setblocking(False)
+        elif all(hasattr(socket_data, attr) for attr in ("recv", "sendall", "close")):
+            self.socket = socket_data
         else:
-            raise RuntimeError("Failed to get socket connection")
+            raise RuntimeError(
+                f"Failed to get socket connection from type: {type(socket_data).__name__}"
+            )
+
+        if hasattr(self.socket, "setblocking"):
+            self.socket.setblocking(False)
 
         await self._read_until_prompt()
+
+    @staticmethod
+    def _is_would_block(error: OSError) -> bool:
+        err_no = getattr(error, "errno", None)
+        return err_no in (
+            errno.EWOULDBLOCK,
+            errno.EAGAIN,
+            10035,  # WSAEWOULDBLOCK on Windows
+        )
+
+    async def _recv_chunk(self, size: int = 4096) -> bytes:
+        return await asyncio.to_thread(self.socket.recv, size)
 
     async def close(self) -> None:
         """Cleans up session resources.
@@ -126,11 +147,14 @@ class DockerSession:
         buffer = b""
         while b"$ " not in buffer:
             try:
-                chunk = self.socket.recv(4096)
+                chunk = await self._recv_chunk()
                 if chunk:
                     buffer += chunk
+            except (BlockingIOError, InterruptedError):
+                await asyncio.sleep(0.05)
+                continue
             except socket.error as e:
-                if e.errno == socket.EWOULDBLOCK:
+                if self._is_would_block(e):
                     await asyncio.sleep(0.1)
                     continue
                 raise
@@ -166,7 +190,7 @@ class DockerSession:
 
                 while True:
                     try:
-                        chunk = self.socket.recv(4096)
+                        chunk = await self._recv_chunk()
                         if not chunk:
                             break
 
@@ -192,8 +216,11 @@ class DockerSession:
                         if buffer.endswith(b"$ "):
                             break
 
+                    except (BlockingIOError, InterruptedError):
+                        await asyncio.sleep(0.05)
+                        continue
                     except socket.error as e:
-                        if e.errno == socket.EWOULDBLOCK:
+                        if self._is_would_block(e):
                             await asyncio.sleep(0.1)
                             continue
                         raise

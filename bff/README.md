@@ -14,7 +14,7 @@
 ## 运行
 
 ```bash
-cd E:\Github\Leo
+cd E:\Github\OpenManus
 .\.venv\Scripts\python -m uvicorn bff.main:app --host 0.0.0.0 --port 8000
 ```
 
