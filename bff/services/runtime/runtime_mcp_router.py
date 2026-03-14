@@ -20,6 +20,45 @@ class RuntimeMcpRouter:
         "sse",
         "http",
     }
+    _RAG_QA_HINTS = {
+        "什么是",
+        "是什么意思",
+        "意思",
+        "含义",
+        "定义",
+        "解释",
+        "解释一下",
+        "概念",
+        "作用",
+        "原理",
+        "区别",
+        "meaning",
+        "what is",
+        "define",
+        "definition",
+        "explain",
+    }
+    _RAG_NEGATIVE_HINTS = {
+        "不要用知识库",
+        "不需要知识库",
+        "不要知识库",
+        "不要检索",
+        "不要 rag",
+        "no rag",
+        "without rag",
+        "don't use rag",
+    }
+    _TOOLING_META_HINTS = {
+        "mcp",
+        "tool",
+        "tools",
+        "server",
+        "servers",
+        "工具",
+        "服务器",
+        "接口",
+        "api",
+    }
 
     def __init__(self, store: InMemoryStore | None = None):
         self._store = store
@@ -43,6 +82,35 @@ class RuntimeMcpRouter:
     def _tokenize_words(value: str) -> set[str]:
         # Keep simple ASCII word extraction; Chinese relies on substring matching.
         return {token for token in re.findall(r"[a-z0-9_-]{2,}", value.lower())}
+
+    def _is_rag_negative_opt_out(self, prompt_text: str) -> bool:
+        return any(hint in prompt_text for hint in self._RAG_NEGATIVE_HINTS)
+
+    def _is_tooling_meta_query(self, prompt_text: str) -> bool:
+        if "mcp" in prompt_text and ("tool" in prompt_text or "server" in prompt_text):
+            return True
+        return any(hint in prompt_text for hint in {"mcp工具", "mcp 服务器", "mcp工具列表"})
+
+    def _looks_like_knowledge_qa(self, prompt_text: str) -> bool:
+        if not prompt_text:
+            return False
+        if len(prompt_text) <= 80 and any(hint in prompt_text for hint in self._RAG_QA_HINTS):
+            return True
+        if prompt_text.endswith("?") or prompt_text.endswith("？"):
+            return any(hint in prompt_text for hint in self._RAG_QA_HINTS)
+        return False
+
+    def should_force_rag_for_prompt(self, prompt: str) -> bool:
+        if not self._is_truthy_env(os.getenv("BFF_RUNTIME_FORCE_RAG_FOR_QA", "1")):
+            return False
+        prompt_text = self._normalize_text(self._extract_current_user_request(prompt))
+        if not prompt_text:
+            return False
+        if self._is_rag_negative_opt_out(prompt_text):
+            return False
+        if self._is_tooling_meta_query(prompt_text):
+            return False
+        return self._looks_like_knowledge_qa(prompt_text)
 
     @staticmethod
     def _expand_path(value: str | None) -> str | None:
@@ -160,6 +228,25 @@ class RuntimeMcpRouter:
                 "暂停",
                 "继续播放",
             }
+        if sid == "rag":
+            aliases |= {
+                "rag",
+                "retrieval",
+                "retrieve",
+                "vector",
+                "embedding",
+                "knowledge base",
+                "bm25",
+                "rerank",
+                "index",
+                "search docs",
+                "文档检索",
+                "知识库",
+                "向量检索",
+                "召回",
+                "重排",
+                "语义搜索",
+            }
         return aliases
 
     def _should_connect_server(self, prompt: str, server: Any) -> bool:
@@ -170,8 +257,13 @@ class RuntimeMcpRouter:
         if self._is_truthy_env(os.getenv("BFF_RUNTIME_CONNECT_ALL_MCP")):
             return True
 
+        server_id = getattr(server, "serverId", "")
+        if server_id == "rag" and self.should_force_rag_for_prompt(prompt):
+            logger.info("MCP routing: force-select rag for knowledge QA request")
+            return True
+
         metadata_parts: list[str] = [
-            self._normalize_text(getattr(server, "serverId", "")),
+            self._normalize_text(server_id),
             self._normalize_text(getattr(server, "name", "")),
             self._normalize_text(getattr(server, "description", "")),
         ]
@@ -183,7 +275,7 @@ class RuntimeMcpRouter:
             metadata_parts.append(self._normalize_text(tool_desc))
 
         metadata_text = " ".join(part for part in metadata_parts if part)
-        alias_set = self._server_aliases(getattr(server, "serverId", ""))
+        alias_set = self._server_aliases(server_id)
 
         # Fast substring path for Chinese/phrases.
         for alias in alias_set:
@@ -204,6 +296,43 @@ class RuntimeMcpRouter:
         if not prompt_tokens:
             return False
         return len(prompt_tokens & (metadata_tokens | alias_tokens)) > 0
+
+    async def _connect_server(self, agent: Manus, server: Any) -> bool:
+        try:
+            if server.type == "stdio":
+                if not server.command:
+                    return False
+                await agent.connect_mcp_server(
+                    server.command,
+                    server_id=server.serverId,
+                    use_stdio=True,
+                    stdio_args=self._effective_playwright_args(
+                        server.serverId, server.args
+                    ),
+                    stdio_env=server.env or None,
+                )
+                return True
+            if not server.url:
+                return False
+            await agent.connect_mcp_server(
+                server.url,
+                server_id=server.serverId,
+                use_stdio=False,
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                f"Failed to connect runtime MCP server {server.serverId}: {exc}"
+            )
+            return False
+
+    async def connect_server_by_id(self, agent: Manus, server_id: str) -> bool:
+        if not self._store:
+            return False
+        server = self._store.mcp_servers.get(server_id)
+        if not server or not server.enabled:
+            return False
+        return await self._connect_server(agent, server)
 
     def build_mcp_catalog_context(self) -> str:
         """
@@ -240,9 +369,9 @@ class RuntimeMcpRouter:
             return prompt
         return f"{prompt}\n\n{catalog}"
 
-    async def connect_enabled_mcp_servers(self, agent: Manus, prompt: str) -> None:
+    async def connect_enabled_mcp_servers(self, agent: Manus, prompt: str) -> list[str]:
         if not self._store:
-            return
+            return []
 
         use_local_mcp = self._is_truthy_env(
             os.getenv("BFF_RUNTIME_USE_LEO_LOCAL_MCP", "0")
@@ -276,32 +405,11 @@ class RuntimeMcpRouter:
         else:
             logger.info("MCP on-demand selected servers: []")
 
+        connected_server_ids: list[str] = []
         for server in selected_servers:
-            try:
-                if server.type == "stdio":
-                    if not server.command:
-                        continue
-                    await agent.connect_mcp_server(
-                        server.command,
-                        server_id=server.serverId,
-                        use_stdio=True,
-                        stdio_args=self._effective_playwright_args(
-                            server.serverId, server.args
-                        ),
-                        stdio_env=server.env or None,
-                    )
-                else:
-                    if not server.url:
-                        continue
-                    await agent.connect_mcp_server(
-                        server.url,
-                        server_id=server.serverId,
-                        use_stdio=False,
-                    )
-            except Exception as exc:
-                logger.warning(
-                    f"Failed to connect runtime MCP server {server.serverId}: {exc}"
-                )
+            connected = await self._connect_server(agent, server)
+            if connected:
+                connected_server_ids.append(server.serverId)
 
         # Treat MCP terminate tools as special finish tools to avoid max-step loops.
         remote_terminate_tools = [
@@ -312,3 +420,4 @@ class RuntimeMcpRouter:
         for tool_name in remote_terminate_tools:
             if tool_name not in agent.special_tool_names:
                 agent.special_tool_names.append(tool_name)
+        return connected_server_ids

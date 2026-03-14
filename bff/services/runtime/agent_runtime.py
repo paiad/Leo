@@ -285,6 +285,37 @@ class ManusRuntime:
             return
         logger.info(f"🍃 Manus final answer:\n{text}")
 
+    @staticmethod
+    def _has_rag_tool_activity(messages: list[Any]) -> bool:
+        rag_prefix = "mcp_rag_"
+        for message in messages:
+            role = getattr(message, "role", None)
+            role_value = getattr(role, "value", role)
+            if role_value == "tool":
+                tool_name = str(getattr(message, "name", "") or "").strip().lower()
+                if tool_name.startswith(rag_prefix):
+                    return True
+                continue
+            if role_value != "assistant":
+                continue
+            tool_calls = getattr(message, "tool_calls", None) or []
+            for call in tool_calls:
+                function = getattr(call, "function", None)
+                name = str(getattr(function, "name", "") or "").strip().lower()
+                if name.startswith(rag_prefix):
+                    return True
+        return False
+
+    @staticmethod
+    def _build_forced_rag_retry_prompt(prompt: str) -> str:
+        reminder = (
+            "[Runtime Enforcement]\n"
+            "你必须至少调用一次 mcp_rag_search 工具，再给出最终答复。\n"
+            "调用参数要求：top_k=8, with_rerank=true。\n"
+            "若知识库未命中，请明确说明“知识库未命中”，并给出下一步建议。"
+        )
+        return f"{prompt}\n\n{reminder}"
+
     async def ask(
         self,
         prompt: str,
@@ -375,7 +406,9 @@ class ManusRuntime:
 
             if reuse_agent:
                 async with self._shared_agent_lock:
-                    await self._mcp_router.connect_enabled_mcp_servers(agent, prompt)
+                    connected_servers = await self._mcp_router.connect_enabled_mcp_servers(
+                        agent, prompt
+                    )
                     run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(prompt)
                     run_invoked = True
                     if time_budget_seconds > 0:
@@ -385,7 +418,9 @@ class ManusRuntime:
                     else:
                         raw = await agent.run(run_prompt)
             else:
-                await self._mcp_router.connect_enabled_mcp_servers(agent, prompt)
+                connected_servers = await self._mcp_router.connect_enabled_mcp_servers(
+                    agent, prompt
+                )
                 run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(prompt)
                 run_invoked = True
                 if time_budget_seconds > 0:
@@ -394,6 +429,64 @@ class ManusRuntime:
                     )
                 else:
                     raw = await agent.run(run_prompt)
+
+            rag_retry_enabled = self._is_truthy_env(
+                os.getenv("BFF_RUNTIME_RAG_RETRY_ON_MISS", "1")
+            )
+            rag_expected = self._mcp_router.should_force_rag_for_prompt(prompt)
+            rag_used = self._has_rag_tool_activity(agent.messages)
+            logger.info(
+                "RAG execution check: "
+                f"connected={bool('rag' in (connected_servers or []))}, "
+                f"expected={rag_expected}, used={rag_used}, "
+                f"retry_enabled={rag_retry_enabled}"
+            )
+            if rag_retry_enabled and rag_expected and not rag_used:
+                logger.warning(
+                    "RAG expected but no rag tool call detected; triggering one retry with forced RAG instruction."
+                )
+                await self._emit_progress(
+                    progress_callback,
+                    {
+                        "type": "progress",
+                        "phase": "act_retry",
+                        "maxSteps": steps,
+                        "message": "检测到知识问答未触发 RAG，正在执行一次强制检索重试",
+                    },
+                )
+                retry_prompt = self._build_forced_rag_retry_prompt(prompt)
+                retry_run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(
+                    retry_prompt
+                )
+                if reuse_agent:
+                    async with self._shared_agent_lock:
+                        if "rag" not in (connected_servers or []):
+                            connected = await self._mcp_router.connect_server_by_id(
+                                agent, "rag"
+                            )
+                            logger.info(
+                                f"Forced rag connection during retry: connected={connected}"
+                            )
+                        if time_budget_seconds > 0:
+                            raw = await asyncio.wait_for(
+                                agent.run(retry_run_prompt), timeout=time_budget_seconds
+                            )
+                        else:
+                            raw = await agent.run(retry_run_prompt)
+                else:
+                    if "rag" not in (connected_servers or []):
+                        connected = await self._mcp_router.connect_server_by_id(
+                            agent, "rag"
+                        )
+                        logger.info(
+                            f"Forced rag connection during retry: connected={connected}"
+                        )
+                    if time_budget_seconds > 0:
+                        raw = await asyncio.wait_for(
+                            agent.run(retry_run_prompt), timeout=time_budget_seconds
+                        )
+                    else:
+                        raw = await agent.run(retry_run_prompt)
 
             await self._emit_progress(
                 progress_callback,

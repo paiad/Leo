@@ -226,6 +226,34 @@
       "enabled": false,
       "discoveredTools": []
     },
+    "rag": {
+      "serverId": "rag",
+      "name": "RAG MCP",
+      "type": "stdio",
+      "command": "E:\\Github\\OpenManus\\.venv\\Scripts\\python.exe",
+      "args": [
+        "-m",
+        "app.rag_mcp.server",
+        "--transport",
+        "stdio"
+      ],
+      "env": {
+        "RAG_VECTOR_BACKEND": "chroma",
+        "RAG_CHROMA_PATH": "E:\\Github\\OpenManus\\workspace\\rag\\chroma",
+        "RAG_VECTOR_COLLECTION": "openmanus_rag",
+        "RAG_QDRANT_URL": "http://127.0.0.1:6333",
+        "RAG_SQLITE_PATH": "E:\\Github\\OpenManus\\workspace\\rag\\rag.sqlite3",
+        "RAG_HF_CACHE_DIR": "E:\\Github\\OpenManus\\workspace\\rag\\hf-cache",
+        "RAG_EMBEDDING_PROVIDER": "local",
+        "RAG_EMBEDDING_MODEL": "BAAI/bge-m3",
+        "RAG_RERANK_ENABLED": "true",
+        "RAG_RERANKER_MODEL": "BAAI/bge-reranker-v2-m3"
+      },
+      "url": null,
+      "description": "RAG MCP server (index/search/stats with hybrid retrieval)",
+      "enabled": false,
+      "discoveredTools": []
+    },
     "playwright": {
       "serverId": "playwright",
       "name": "playwright",

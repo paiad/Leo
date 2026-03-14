@@ -78,3 +78,42 @@ def test_mcp_selection_stopwords_do_not_trigger_english_overlap():
     )
 
     assert runtime._should_connect_server(prompt, server) is False
+
+
+def test_mcp_selection_auto_routes_definition_query_to_rag():
+    runtime = ManusRuntime(store=None)
+    rag = SimpleNamespace(
+        serverId="rag",
+        name="RAG MCP",
+        description="RAG MCP server",
+        discoveredTools=[],
+    )
+    github = SimpleNamespace(
+        serverId="github",
+        name="GitHub",
+        description="",
+        discoveredTools=[],
+    )
+    prompt = (
+        "[Current User Request]\n"
+        "津液的意思"
+    )
+
+    assert runtime._should_connect_server(prompt, rag) is True
+    assert runtime._should_connect_server(prompt, github) is False
+
+
+def test_mcp_selection_does_not_force_rag_on_tooling_meta_query():
+    runtime = ManusRuntime(store=None)
+    rag = SimpleNamespace(
+        serverId="rag",
+        name="RAG MCP",
+        description="RAG MCP server",
+        discoveredTools=[],
+    )
+    prompt = (
+        "[Current User Request]\n"
+        "请告诉我有哪些 mcp tools"
+    )
+
+    assert runtime._should_connect_server(prompt, rag) is False

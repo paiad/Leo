@@ -38,6 +38,10 @@ cd E:\Github\OpenManus
 - `GET/POST/PUT/DELETE /api/v1/mcp/servers`
 - `POST /api/v1/mcp/servers/{server_id}/discover`
 - `GET /api/v1/mcp/servers/{server_id}/tools`
+- `POST /api/v1/rag/upload`
+- `POST /api/v1/rag/index`
+- `POST /api/v1/rag/search`
+- `GET /api/v1/rag/stats`
 
 兼容别名（建议逐步迁移）：
 - `POST /api/v1/chat/messages`
