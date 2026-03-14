@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import tiktoken
 from app.config import config
+from app.logger import logger
 from app.prompt.manus import SYSTEM_PROMPT
 from bff.domain.models import (
     ChatRequest,
@@ -73,6 +74,65 @@ class ChatService:
             answer=answer,
             model=model or self._model_service.get_runtime_model_name(),
         )
+
+    async def _persist_post_turn(
+        self,
+        *,
+        source: str,
+        session_id: str,
+        user_text: str,
+        response_text: str,
+        model: str | None,
+    ) -> None:
+        await self._context_memory.persist_turn_memory(
+            session_id=session_id,
+            user_message=user_text,
+            assistant_message=response_text,
+        )
+        await self._append_chat_record(
+            source=source,
+            session_id=session_id,
+            question=user_text,
+            answer=response_text,
+            model=model,
+        )
+        self._schedule_memory_sync(
+            source=source,
+            session_id=session_id,
+            question=user_text,
+            answer=response_text,
+            model=model,
+        )
+
+    def _schedule_post_turn_persist(
+        self,
+        *,
+        source: str,
+        session_id: str,
+        user_text: str,
+        response_text: str,
+        model: str | None,
+    ) -> None:
+        task = asyncio.create_task(
+            self._persist_post_turn(
+                source=source,
+                session_id=session_id,
+                user_text=user_text,
+                response_text=response_text,
+                model=model,
+            )
+        )
+
+        def _consume_exception(done_task: asyncio.Task[None]) -> None:
+            try:
+                done_task.result()
+            except Exception:
+                logger.exception(
+                    "Async post-turn persistence failed: "
+                    f"source={source}, session_id={session_id}"
+                )
+
+        task.add_done_callback(_consume_exception)
 
     @staticmethod
     def build_prompt(content: str, workspace_prompt: str | None) -> str:
@@ -425,25 +485,22 @@ class ChatService:
             runtime_prompt
         )
         assistant = await self._append_assistant_message(session.id, response_text, payload.model)
-        await self._context_memory.persist_turn_memory(
-            session_id=session.id,
-            user_message=user_text,
-            assistant_message=response_text,
-        )
-        await self._append_chat_record(
-            source=payload.source,
-            session_id=session.id,
-            question=user_text,
-            answer=response_text,
-            model=payload.model,
-        )
-        self._schedule_memory_sync(
-            source=payload.source,
-            session_id=session.id,
-            question=user_text,
-            answer=response_text,
-            model=payload.model,
-        )
+        if payload.source == "lark":
+            self._schedule_post_turn_persist(
+                source=payload.source,
+                session_id=session.id,
+                user_text=user_text,
+                response_text=response_text,
+                model=payload.model,
+            )
+        else:
+            await self._persist_post_turn(
+                source=payload.source,
+                session_id=session.id,
+                user_text=user_text,
+                response_text=response_text,
+                model=payload.model,
+            )
 
         return {
             "success": True,
