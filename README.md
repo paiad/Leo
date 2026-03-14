@@ -60,7 +60,7 @@ flowchart LR
     end
 
     subgraph API["BFF API 层（bff/api）"]
-        AR[Router<br/>chat / mcp / health / feishu]
+        AR[Router<br/>chat / mcp / health / feishu / rag]
     end
 
     subgraph Service["BFF 服务层（bff/services）"]
@@ -69,6 +69,7 @@ flowchart LR
         MR[RuntimeMcpRouter<br/>按需 MCP 路由与连接]
         RF[RuntimeFinalizer<br/>最终答复收敛]
         TS[ToolingService<br/>MCP 服务管理 / discover]
+        RS[RagRuntimeService<br/>索引/检索/统计]
     end
 
     subgraph DomainRepo["领域与存储层"]
@@ -88,6 +89,8 @@ flowchart LR
         MCPS[MCP Servers<br/>stdio / sse]
         PW[Playwright / Browser]
         FSAPI[Feishu Open API]
+        VDB[Vector DB<br/>Chroma / Qdrant]
+        EMB[Embedding / Reranker Models]
     end
 
     subgraph ConfigState["配置与状态"]
@@ -101,6 +104,7 @@ flowchart LR
     FLC --> CS
     AR --> CS
     AR --> TS
+    AR --> RS
 
     CS --> DM
     CS --> ST
@@ -118,6 +122,9 @@ flowchart LR
     CS --> AR
     AR --> FE
     CS --> FSAPI
+    RS --> VDB
+    RS --> EMB
+    RS --> ST
 
     TOML -.读取.-> CS
     TOML -.读取.-> RT
@@ -125,6 +132,7 @@ flowchart LR
     ENV -.读取.-> RT
     ENV -.读取.-> MR
     ENV -.读取.-> TS
+    ENV -.读取.-> RS
     MCPJSON -.加载/写回.-> TS
     TS -.同步.-> ST
 ```
@@ -145,13 +153,16 @@ API 层接收用户消息，定位或创建 `session`，写入本轮 user messag
 4. MCP 按需连接  
 `RuntimeMcpRouter` 基于当前请求语义选择需要连接的 MCP server，避免全量连接造成开销和不稳定。
 
-5. 执行推理与工具调用  
-Agent 进入 `PLAN -> ACT -> VERIFY -> FINALIZE` 阶段，按需调用本地工具或 MCP 工具完成任务。
+5. RAG 判定与检索（命中时）  
+当请求被判定为知识问答时，运行时会优先连接 `rag` MCP，并在执行阶段调用 `mcp_rag_search`；若应触发但未触发，会进行一次强制 RAG 重试。
 
-6. 收敛最终答复  
+6. 执行推理与工具调用  
+Agent 进入 `PLAN -> ACT -> VERIFY -> FINALIZE` 阶段，按需调用本地工具或 MCP 工具（含 RAG）完成任务。
+
+7. 收敛最终答复  
 `RuntimeFinalizer` 从消息链中选择最终 assistant 内容，做最终规范化后返回给调用方。
 
-7. 持久化与输出  
+8. 持久化与输出  
 会话消息保存到 store；若是流式请求，按 SSE 分片输出；若是飞书消息则通过飞书接口回发。
 
 消息回复时序图（详细）：
@@ -168,6 +179,7 @@ sequenceDiagram
     participant AG as Manus Agent
     participant LLM as LLM Provider
     participant MCP as MCP Server(s)
+    participant RAG as RAG MCP Server
     participant RF as RuntimeFinalizer
 
     U->>API: POST /api/v1/chat/completions
@@ -186,8 +198,13 @@ sequenceDiagram
         RT->>AG: run step
         AG->>LLM: completion/tool-choice
         alt needs MCP tool
-            AG->>MCP: invoke remote tool
-            MCP-->>AG: tool result
+            alt tool is RAG
+                AG->>RAG: mcp_rag_search(query, top_k, with_rerank)
+                RAG-->>AG: hits + debug info
+            else other MCP tools
+                AG->>MCP: invoke remote tool
+                MCP-->>AG: tool result
+            end
         else needs builtin tool
             AG-->>AG: run builtin tool (python/editor/browser/bash)
         end
@@ -259,8 +276,13 @@ stateDiagram-v2
 
     state ACT {
       [*] --> A1
-      A1: 选择工具\n调用 MCP 或内置工具\n写入中间结果
-      A1 --> A1: 多步工具迭代\n(直到达到阶段目标或步数上限)
+      A1: 工具决策\n判断是否需要 RAG
+      A1 --> A2: 知识问答 / 检索任务
+      A1 --> A3: 非 RAG 工具路径
+      A2: 调用 mcp_rag_search\n(top_k / with_rerank)\n写入检索上下文
+      A3: 调用 MCP 或内置工具\n写入中间结果
+      A2 --> A1: 继续迭代
+      A3 --> A1: 继续迭代
     }
 
     ACT --> VERIFY: 获得阶段性结果
@@ -331,6 +353,45 @@ python -m uvicorn bff.main:app --host 0.0.0.0 --port 8000
 ```
 
 > Windows 下不建议使用 `--reload`，可能导致 Playwright/MCP-stdio 子进程行为异常。
+
+## RAG 知识库（MCP）
+
+当前版本已内置 RAG 能力，支持文档入库、混合检索（Vector + BM25）与可选重排（Rerank）。
+
+### 功能点
+
+- 文档上传与索引：`/api/v1/rag/upload`、`/api/v1/rag/index`
+- 文档检索：`/api/v1/rag/search`（支持 `topK` 与 `withRerank`）
+- 索引管理：`/api/v1/rag/stats`、`/api/v1/rag/sources`、`/api/v1/rag/delete`、`/api/v1/rag/clear`
+- 前端入口：`/rag`（原 `/knowledge` 已重定向到 `/rag`）
+
+### 快速使用
+
+1. 启动 BFF：
+
+```bash
+python -m uvicorn bff.main:app --host 0.0.0.0 --port 8000
+```
+
+2. 前端进入 `/rag` 页面，上传文件并执行索引/检索。
+
+3. 如需独立启动 RAG MCP Server（stdio）：
+
+```bash
+python run_rag_mcp_server.py --transport stdio
+```
+
+### 关键配置（环境变量）
+
+- `RAG_VECTOR_BACKEND`：`chroma`（默认）或 `qdrant`
+- `RAG_CHROMA_PATH`：默认 `workspace/rag/chroma`
+- `RAG_SQLITE_PATH`：默认 `workspace/rag/rag.sqlite3`
+- `RAG_EMBEDDING_PROVIDER`：`local`（默认）或 `openai`
+- `RAG_EMBEDDING_MODEL`：默认 `BAAI/bge-m3`
+- `RAG_RERANK_ENABLED`：默认 `true`
+- `RAG_RERANKER_MODEL`：默认 `BAAI/bge-reranker-v2-m3`
+
+更多说明见：[`docs/rag-mcp-quickstart.md`](docs/rag-mcp-quickstart.md)
 
 ## Leo BFF 能力概览
 
