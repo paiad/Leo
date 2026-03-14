@@ -33,13 +33,26 @@ def test_resolve_max_steps_dynamic_increases_for_complex_prompt(monkeypatch):
 def test_resolve_max_steps_dynamic_can_reduce_simple_prompt(monkeypatch):
     monkeypatch.setenv("BFF_RUNTIME_DYNAMIC_STEPS_ENABLED", "1")
     monkeypatch.setenv("BFF_MANUS_MAX_STEPS", "10")
-    monkeypatch.setenv("BFF_RUNTIME_DYNAMIC_STEPS_MAX", "20")
+    monkeypatch.setenv("BFF_RUNTIME_DYNAMIC_STEPS_MAX", "15")
     monkeypatch.setenv("BFF_RUNTIME_DYNAMIC_STEPS_MIN", "4")
 
     runtime = ManusRuntime(store=None)
     steps = runtime._resolve_max_steps("hi", None)
 
     assert 4 <= steps < 10
+
+
+def test_resolve_max_steps_uses_default_dynamic_cap_15(monkeypatch):
+    monkeypatch.setenv("BFF_RUNTIME_DYNAMIC_STEPS_ENABLED", "1")
+    monkeypatch.setenv("BFF_MANUS_MAX_STEPS", "10")
+    monkeypatch.delenv("BFF_RUNTIME_DYNAMIC_STEPS_MAX", raising=False)
+    monkeypatch.setenv("BFF_RUNTIME_DYNAMIC_STEPS_MIN", "4")
+
+    runtime = ManusRuntime(store=None)
+    prompt = ("implement refactor analyze then verify then finalize\n" * 120).strip()
+    steps = runtime._resolve_max_steps(prompt, None)
+
+    assert steps <= 15
 
 
 def test_stall_detector_detects_same_tool_loop():

@@ -205,7 +205,7 @@ class ManusRuntime:
         if chars < 80 and words < 20 and score == 0:
             score -= 2
 
-        dynamic_cap = self._env_int("BFF_RUNTIME_DYNAMIC_STEPS_MAX", 20, minimum=6)
+        dynamic_cap = self._env_int("BFF_RUNTIME_DYNAMIC_STEPS_MAX", 15, minimum=6)
         dynamic_floor = self._env_int("BFF_RUNTIME_DYNAMIC_STEPS_MIN", 4, minimum=1)
         return max(dynamic_floor, min(dynamic_cap, base_steps + score))
 
