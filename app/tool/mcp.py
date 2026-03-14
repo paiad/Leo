@@ -151,11 +151,14 @@ class MCPClients(ToolCollection):
         base = description or ""
         guidance = (
             "\n\nPlaywright reliability notes for media controls:\n"
-            "- Before clicking, call browser_snapshot to get the latest element refs.\n"
+            "- Before any media control click, call browser_snapshot to get the latest element refs and labels.\n"
+            "- Treat play/pause as a TOGGLE control: never blind-click it without checking current state first.\n"
+            "- On YouTube-like players, button label usually indicates next action: '播放' means currently paused, '暂停' means currently playing.\n"
+            "- If timeline/progress is already advancing, do NOT click play again.\n"
             "- If play/pause button is not clickable, focus the player area then try browser_press_key with Space or k.\n"
             "- If keyboard still fails, use browser_evaluate on page to run a fallback script that finds <audio>/<video> and calls play().\n"
-            "- After each action, verify state change (timeline/progress/time text) instead of assuming success.\n"
-            "- Prefer retrying with a fresh snapshot over repeated blind clicks.\n"
+            "- After each action, verify state change (timeline/progress/time text); if no progress increase after 1-2s, then retry once with fresh snapshot.\n"
+            "- Prefer retrying with a fresh snapshot over repeated blind clicks; avoid repeated clicks on the same play/pause button.\n"
         )
         return f"{base}{guidance}"
 
