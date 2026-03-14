@@ -85,6 +85,44 @@
 - `chat_events`（审计/重放）
 - `tenant_id`（多租户隔离）
 
+## 4.1 长上下文分层存储（新增）
+
+在原有 `chat_sessions/chat_messages` 基础上，新增三张表用于“压缩 + 回灌 + 审计”：
+
+1) `chat_session_summaries`
+- 用途：滚动摘要（每 N 轮生成 1 条），支持多级压缩（`summary_level`）
+- 关键字段：
+  - `session_id`
+  - `summary_level`（1=基础摘要，2=摘要的摘要）
+  - `summary_text` / `summary_json`
+  - `message_count` / `approx_tokens`
+  - `superseded_by_id` / `status`
+
+2) `chat_memory_facts`
+- 用途：稳定事实记忆（偏好、约束、决策、术语）
+- 关键字段：
+  - `session_id`（可空，空表示全局事实）
+  - `fact_type` / `fact_key` / `fact_value` / `fact_json`
+  - `confidence` / `priority`
+  - `effective_from` / `effective_to` / `status`
+- 约束：
+  - 活跃事实唯一索引：`(scope, fact_key, status=active)`
+
+3) `chat_context_injections`
+- 用途：记录每次提示词回灌使用了哪些摘要与事实，便于审计 token 消耗
+- 关键字段：
+  - `summary_ids` / `fact_ids`
+  - `prompt_budget_tokens` / `used_tokens`
+  - `overflow_strategy`
+
+### 推荐回灌策略
+
+- 每轮仅回灌：
+  - 最新 1 条 `chat_session_summaries`（必要时 +1 条上一级摘要）
+  - `chat_memory_facts` 中 `status=active` 且 `priority` 最高的 Top-K
+- 不直接回灌全量 `chat_messages`
+- 定期将旧摘要“再摘要”，并将旧摘要标记为 `superseded`
+
 ## 5. 分区与归档策略
 
 - `chat_messages` 按月分区（`created_at`）

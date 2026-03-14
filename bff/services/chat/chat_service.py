@@ -19,10 +19,11 @@ from bff.domain.models import (
     now_iso,
     new_id,
 )
-from bff.repositories.store import InMemoryStore
+from bff.repositories.store import InMemoryStore, PostgresStore
 from bff.services.memory.memory_sync_service import MemorySyncService
 from bff.services.models.model_service import ModelService
 from bff.services.runtime.agent_runtime import AgentRuntime
+from bff.services.chat.context_memory_service import ContextMemoryService
 
 
 def sse_event(event: str, payload: dict[str, Any]) -> str:
@@ -38,7 +39,7 @@ def split_chunks(text: str, chunk_size: int = 120) -> list[str]:
 class ChatService:
     def __init__(
         self,
-        store: InMemoryStore,
+        store: InMemoryStore | PostgresStore,
         runtime: AgentRuntime,
         model_service: ModelService,
         memory_sync: MemorySyncService | None = None,
@@ -47,6 +48,7 @@ class ChatService:
         self._runtime = runtime
         self._model_service = model_service
         self._memory_sync = memory_sync
+        self._context_memory = ContextMemoryService(store=store)
         self._lock = asyncio.Lock()
         self._record_lock = asyncio.Lock()
         self._tokenizer = self._init_tokenizer()
@@ -235,6 +237,7 @@ class ChatService:
         workspace_prompt: str | None,
         *,
         source: str,
+        request_message_id: str | None = None,
     ) -> str:
         prompt = self.build_prompt(user_text, workspace_prompt)
         output_policy = (
@@ -244,6 +247,20 @@ class ChatService:
         )
         if output_policy:
             prompt = f"{prompt}\n\n{output_policy}"
+
+        context_bundle = self._context_memory.build_context_bundle(
+            session_id=session.id,
+            current_user_text=prompt,
+        )
+        if context_bundle.text:
+            prompt = f"{context_bundle.text}\n\n{prompt}"
+            self._context_memory.persist_injection_audit(
+                session_id=session.id,
+                request_message_id=request_message_id,
+                query_text=user_text,
+                bundle=context_bundle,
+            )
+
         history_context = self._format_history_context(session, prompt)
         if not history_context:
             return prompt
@@ -389,7 +406,11 @@ class ChatService:
         if not user_text:
             raise ValueError("content 不能为空")
 
-        session = await self._append_user_message(payload.sessionId, user_text, payload.source)
+        session, user_message_id = await self._append_user_message(
+            payload.sessionId,
+            user_text,
+            payload.source,
+        )
         self._session_output_dir(source=payload.source, session_id=session.id).mkdir(
             parents=True, exist_ok=True
         )
@@ -398,11 +419,17 @@ class ChatService:
             user_text,
             payload.workspacePrompt,
             source=payload.source,
+            request_message_id=user_message_id,
         )
         response_text = await self._runtime.ask(
             runtime_prompt
         )
         assistant = await self._append_assistant_message(session.id, response_text, payload.model)
+        await self._context_memory.persist_turn_memory(
+            session_id=session.id,
+            user_message=user_text,
+            assistant_message=response_text,
+        )
         await self._append_chat_record(
             source=payload.source,
             session_id=session.id,
@@ -439,7 +466,11 @@ class ChatService:
             )
             return
 
-        session = await self._append_user_message(payload.sessionId, user_text, payload.source)
+        session, user_message_id = await self._append_user_message(
+            payload.sessionId,
+            user_text,
+            payload.source,
+        )
         self._session_output_dir(source=payload.source, session_id=session.id).mkdir(
             parents=True, exist_ok=True
         )
@@ -470,6 +501,11 @@ class ChatService:
                 session.id,
                 response_text,
                 payload.model,
+            )
+            await self._context_memory.persist_turn_memory(
+                session_id=session.id,
+                user_message=user_text,
+                assistant_message=response_text,
             )
             await self._append_chat_record(
                 source=payload.source,
@@ -504,6 +540,7 @@ class ChatService:
                         user_text,
                         payload.workspacePrompt,
                         source=payload.source,
+                        request_message_id=user_message_id,
                     ),
                     progress_callback=on_runtime_event,
                 )
@@ -619,12 +656,13 @@ class ChatService:
         session_id: str | None,
         content: str,
         source: str = "browser",
-    ) -> SessionRecord:
+    ) -> tuple[SessionRecord, str]:
         async with self._lock:
             session = self._ensure_session(session_id, source=source)
+            message_id = new_id()
             session.messages.append(
                 MessageRecord(
-                    id=new_id(),
+                    id=message_id,
                     role="user",
                     content=content,
                     createdAt=now_iso(),
@@ -632,7 +670,7 @@ class ChatService:
             )
             session.updatedAt = now_iso()
             self._store.persist_sessions()
-            return session
+            return session, message_id
 
     async def _append_assistant_message(
         self,
