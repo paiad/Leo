@@ -1,6 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import { ChatShell } from "@/features/chat/components/chat-shell";
 import { ModelsManager } from "@/features/models/components/models-manager";
+import { RagManager } from "@/features/rag/components/rag-manager";
 import { McpManager } from "@/features/tools/components/tools-manager";
 import { WorkspaceHome } from "@/features/workspace/components/workspace-home";
 import { WorkspacePlaceholderPage } from "@/features/workspace/components/workspace-placeholder-page";
@@ -24,6 +25,9 @@ export default async function CatchAllPage({ params }: CatchAllPageProps) {
   if (pathname === "/tools") {
     redirect("/mcp");
   }
+  if (pathname === "/knowledge") {
+    redirect("/rag");
+  }
 
   const route = workspaceRouteMeta[pathname];
 
@@ -45,6 +49,9 @@ export default async function CatchAllPage({ params }: CatchAllPageProps) {
 
   if (pathname === "/models") {
     return <ModelsManager />;
+  }
+  if (pathname === "/rag") {
+    return <RagManager />;
   }
 
   return (
