@@ -89,84 +89,6 @@ class MCPClientTool(BaseTool):
 
         return normalized
 
-    @staticmethod
-    def _extract_text_content(result: Any) -> str:
-        return ", ".join(
-            item.text for item in getattr(result, "content", []) if isinstance(item, TextContent)
-        )
-
-    @staticmethod
-    def _looks_like_media_toggle_click(kwargs: dict[str, Any]) -> bool:
-        element = str(kwargs.get("element") or "").strip().lower()
-        if not element:
-            return False
-        markers = ("play", "pause", "play/pause", "播放", "暂停")
-        return any(marker in element for marker in markers)
-
-    async def _call_tool_text(self, tool_name: str, tool_input: dict[str, Any]) -> str:
-        result = await self.session.call_tool(tool_name, tool_input)
-        return self._extract_text_content(result) or "No output returned."
-
-    async def _run_playwright_media_guard(self) -> str:
-        """
-        Best-effort post-click media guard for toggle controls.
-        Goal: avoid accidental pause after a blind play/pause click.
-        """
-        if not self.session:
-            return ""
-
-        lines: list[str] = []
-        try:
-            before = await self._call_tool_text(
-                "browser_evaluate",
-                {
-                    "function": (
-                        "() => { const v = document.querySelector('video, audio'); "
-                        "if (!v) return { hasMedia:false }; "
-                        "return { hasMedia:true, paused:v.paused, currentTime:v.currentTime, readyState:v.readyState }; }"
-                    )
-                },
-            )
-            lines.append(f"before={before}")
-        except Exception as exc:
-            lines.append(f"before_error={exc}")
-            return " ; ".join(lines)
-
-        try:
-            await self._call_tool_text("browser_wait_for", {"time": 1})
-            recover = await self._call_tool_text(
-                "browser_evaluate",
-                {
-                    "function": (
-                        "async () => { const v = document.querySelector('video, audio'); "
-                        "if (!v) return { hasMedia:false }; "
-                        "if (v.paused) { try { await v.play(); } catch (e) { return { hasMedia:true, resumed:false, error:String(e) }; } } "
-                        "return { hasMedia:true, resumed:!v.paused, paused:v.paused, currentTime:v.currentTime, readyState:v.readyState }; }"
-                    )
-                },
-            )
-            lines.append(f"recover={recover}")
-        except Exception as exc:
-            lines.append(f"recover_error={exc}")
-
-        try:
-            await self._call_tool_text("browser_wait_for", {"time": 1})
-            after = await self._call_tool_text(
-                "browser_evaluate",
-                {
-                    "function": (
-                        "() => { const v = document.querySelector('video, audio'); "
-                        "if (!v) return { hasMedia:false }; "
-                        "return { hasMedia:true, paused:v.paused, currentTime:v.currentTime, readyState:v.readyState }; }"
-                    )
-                },
-            )
-            lines.append(f"after={after}")
-        except Exception as exc:
-            lines.append(f"after_error={exc}")
-
-        return " ; ".join(lines)
-
     async def execute(self, **kwargs) -> ToolResult:
         """Execute the tool by making a remote call to the MCP server."""
         if not self.session:
@@ -176,21 +98,9 @@ class MCPClientTool(BaseTool):
             logger.info(f"Executing tool: {self.original_name}")
             normalized_kwargs = self._normalize_tool_input(kwargs)
             result = await self.session.call_tool(self.original_name, normalized_kwargs)
-            content_str = self._extract_text_content(result)
-
-            if (
-                self.server_id == "playwright"
-                and self.original_name == "browser_click"
-                and self._looks_like_media_toggle_click(normalized_kwargs)
-            ):
-                guard_output = await self._run_playwright_media_guard()
-                if guard_output:
-                    content_str = (
-                        (content_str + "\n\n" if content_str else "")
-                        + "[Playwright Media Guard]\n"
-                        + guard_output
-                    )
-
+            content_str = ", ".join(
+                item.text for item in result.content if isinstance(item, TextContent)
+            )
             return ToolResult(output=content_str or "No output returned.")
         except Exception as e:
             return ToolResult(error=f"Error executing tool: {str(e)}")
