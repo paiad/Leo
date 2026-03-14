@@ -40,6 +40,32 @@ const roleBadge = {
   },
 } as const;
 
+function formatShanghaiTimeToMinute(value: string | null | undefined): string {
+  const raw = value?.trim();
+  if (!raw) {
+    return "";
+  }
+  if (raw === "System") {
+    return raw;
+  }
+  if (/^\d{2}:\d{2}$/.test(raw)) {
+    return raw;
+  }
+  if (/^\d{2}:\d{2}:\d{2}$/.test(raw)) {
+    return raw.slice(0, 5);
+  }
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) {
+    return raw;
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(parsed);
+}
+
 function timelinePhaseLabel(event: NonNullable<ChatMessage["timelineEvents"]>[number]): string {
   const phase = event.phase;
   if (phase === "progress") {
@@ -240,7 +266,7 @@ export function ChatMessages({
                 <div className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
                   <Icon className="h-3.5 w-3.5" />
                   {displayLabel}
-                  <span className="text-slate-400">{message.createdAt}</span>
+                  <span className="text-slate-400">{formatShanghaiTimeToMinute(message.createdAt)}</span>
                 </div>
                 {shouldRenderToolPanelInAssistant ? (
                   <ChatToolEvents
@@ -273,7 +299,7 @@ export function ChatMessages({
                               </div>
                               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-600">
                                 <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-500">
-                                  {event.createdAt}
+                                  {formatShanghaiTimeToMinute(event.createdAt)}
                                 </span>
                               <span
                                 className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${timelinePhaseBadgeClass(
@@ -355,7 +381,9 @@ export function ChatMessages({
             <div className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
               <Bot className="h-3.5 w-3.5" />
               {loadingModel ? `Leo | ${loadingModel}` : "Leo"}
-              {toolCallTime ? <span className="text-slate-400">{toolCallTime}</span> : null}
+              {toolCallTime ? (
+                <span className="text-slate-400">{formatShanghaiTimeToMinute(toolCallTime)}</span>
+              ) : null}
             </div>
             <ChatToolEvents
               events={toolEvents}
@@ -372,7 +400,9 @@ export function ChatMessages({
             <div className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
               <Bot className="h-3.5 w-3.5" />
               {loadingModel ? `Leo | ${loadingModel}` : "Leo"}
-              {loadingTime ? <span className="text-slate-400">{loadingTime}</span> : null}
+              {loadingTime ? (
+                <span className="text-slate-400">{formatShanghaiTimeToMinute(loadingTime)}</span>
+              ) : null}
             </div>
             <div className="ml-2 inline-flex self-start items-center gap-1 px-1 py-1">
               <span

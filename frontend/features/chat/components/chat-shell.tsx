@@ -44,7 +44,12 @@ function generateClientMessageId(prefix: string): string {
 }
 
 function nowTimeLabel(): string {
-  return new Date().toTimeString().slice(0, 8);
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date());
 }
 
 function formatProgressText(
@@ -176,7 +181,24 @@ export function ChatShell() {
 
       if (storedSessionId) {
         try {
-          await loadSessionAndHistory(storedSessionId);
+          const sessions = await fetchChatSessions();
+          const storedSession = sessions.find((session) => session.id === storedSessionId);
+          const isFeishuSession = Boolean(
+            storedSession?.title.trim().toLowerCase().startsWith("feishu-"),
+          );
+          if (isFeishuSession) {
+            window.localStorage.removeItem(CHAT_SESSION_STORAGE_KEY);
+          }
+        } catch {
+          // If session list fetch fails, keep legacy behavior and try stored session directly.
+        }
+
+        const activeStoredSessionId = window.localStorage.getItem(CHAT_SESSION_STORAGE_KEY);
+        if (!activeStoredSessionId) {
+          // Stored session was cleared (e.g. Feishu session); continue fallback flow.
+        } else {
+        try {
+          await loadSessionAndHistory(activeStoredSessionId);
           return;
         } catch (error) {
           const message = error instanceof Error ? error.message : "";
@@ -189,11 +211,15 @@ export function ChatShell() {
             setRequestError(message || "历史消息加载失败，请稍后重试");
           }
         }
+        }
       }
 
       try {
         const sessions = await fetchChatSessions();
-        for (const session of sessions) {
+        const browserSessions = sessions.filter(
+          (session) => !session.title.trim().toLowerCase().startsWith("feishu-"),
+        );
+        for (const session of browserSessions) {
           try {
             await loadSessionAndHistory(session.id);
             return;

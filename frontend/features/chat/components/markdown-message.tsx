@@ -8,6 +8,10 @@ type MarkdownMessageProps = {
   inverse?: boolean;
 };
 
+function isImageLink(value: string): boolean {
+  return /^https?:\/\/\S+\.(?:png|jpe?g|gif|webp|bmp|svg)(?:\?\S*)?$/i.test(value.trim());
+}
+
 export function MarkdownMessage({ content, inverse = false }: MarkdownMessageProps) {
   return (
     <div
@@ -40,14 +44,51 @@ export function MarkdownMessage({ content, inverse = false }: MarkdownMessagePro
           ),
           li: ({ className, ...props }) => <li className={cn("my-0.5", className)} {...props} />,
           a: ({ className, ...props }) => (
-            <a
+            (() => {
+              const href = typeof props.href === "string" ? props.href : "";
+              if (isImageLink(href)) {
+                return (
+                  <span className="my-1 inline-flex max-w-full flex-col gap-2 align-top">
+                    <a
+                      className={cn(
+                        "break-all underline underline-offset-2",
+                        inverse ? "text-slate-100" : "text-blue-700 hover:text-blue-800",
+                        className,
+                      )}
+                      target="_blank"
+                      rel="noopener noreferrer nofollow"
+                      {...props}
+                    />
+                    <img
+                      src={href}
+                      alt="image preview"
+                      loading="lazy"
+                      className="max-h-[360px] max-w-full rounded-lg border border-slate-200 object-contain"
+                    />
+                  </span>
+                );
+              }
+              return (
+                <a
+                  className={cn(
+                    "break-all underline underline-offset-2",
+                    inverse ? "text-slate-100" : "text-blue-700 hover:text-blue-800",
+                    className,
+                  )}
+                  target="_blank"
+                  rel="noopener noreferrer nofollow"
+                  {...props}
+                />
+              );
+            })()
+          ),
+          img: ({ className, ...props }) => (
+            <img
+              loading="lazy"
               className={cn(
-                "break-all underline underline-offset-2",
-                inverse ? "text-slate-100" : "text-blue-700 hover:text-blue-800",
+                "my-2 max-h-[420px] max-w-full rounded-lg border border-slate-200 object-contain",
                 className,
               )}
-              target="_blank"
-              rel="noopener noreferrer nofollow"
               {...props}
             />
           ),
