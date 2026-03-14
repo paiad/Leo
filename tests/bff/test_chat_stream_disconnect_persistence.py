@@ -4,7 +4,7 @@ import pytest
 
 from bff.domain.models import ChatRequest
 from bff.repositories.store import InMemoryStore
-from bff.services.chat_service import ChatService
+from bff.services.chat.chat_service import ChatService
 
 
 class _FakeRuntime:

@@ -7,7 +7,7 @@ import threading
 from typing import Any
 
 from app.logger import logger
-from bff.api.feishu import handle_message_receive_event, is_duplicate_message
+from bff.api.integration.feishu import handle_message_receive_event, is_duplicate_message
 from bff.utils.env import get_env
 
 

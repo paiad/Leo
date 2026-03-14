@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from bff.services.agent_runtime import ManusRuntime
+from bff.services.runtime.agent_runtime import ManusRuntime
 
 
 def test_mcp_selection_ignores_history_wrapper_noise():

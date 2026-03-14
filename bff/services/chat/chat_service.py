@@ -20,8 +20,8 @@ from bff.domain.models import (
     new_id,
 )
 from bff.repositories.store import InMemoryStore
-from bff.services.agent_runtime import AgentRuntime
-from bff.services.model_service import ModelService
+from bff.services.models.model_service import ModelService
+from bff.services.runtime.agent_runtime import AgentRuntime
 
 
 def sse_event(event: str, payload: dict[str, Any]) -> str:

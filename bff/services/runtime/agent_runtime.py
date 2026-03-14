@@ -9,9 +9,9 @@ from app.logger import logger
 from app.schema import Memory
 from app.tool.tool_collection import ToolCollection
 from bff.repositories.store import InMemoryStore
-from bff.services.runtime_finalizer import RuntimeFinalizer
-from bff.services.runtime_mcp_router import RuntimeMcpRouter
-from bff.services.runtime_progress import RuntimeProgressEmitter
+from bff.services.runtime.runtime_finalizer import RuntimeFinalizer
+from bff.services.runtime.runtime_mcp_router import RuntimeMcpRouter
+from bff.services.runtime.runtime_progress import RuntimeProgressEmitter
 
 
 class AgentRuntime(Protocol):
@@ -47,6 +47,30 @@ class ManusRuntime:
         if marker not in prompt:
             return prompt
         return prompt.rsplit(marker, 1)[-1].strip()
+
+    @staticmethod
+    def _select_final_assistant_text(messages: list[Any]) -> str | None:
+        """
+        Backward-compatible selector kept for existing tests/callers.
+        Runtime main flow uses RuntimeFinalizer.
+        """
+        preferred = RuntimeFinalizer.select_final_assistant_text(messages)
+        if preferred is not None:
+            return preferred
+
+        fallback_texts: list[str] = []
+        for message in messages:
+            role = getattr(message, "role", None)
+            role_value = getattr(role, "value", role)
+            content = getattr(message, "content", None)
+            if role_value != "assistant" or not isinstance(content, str):
+                continue
+            text = content.strip()
+            if text:
+                fallback_texts.append(text)
+        if fallback_texts:
+            return fallback_texts[-1]
+        return None
 
     @staticmethod
     def _clear_current_task_cancellation() -> None:

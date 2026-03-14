@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from bff.services.agent_runtime import ManusRuntime
+from bff.services.runtime.agent_runtime import ManusRuntime
 
 
 def _assistant(content: str, *, with_tool_calls: bool) -> SimpleNamespace:
