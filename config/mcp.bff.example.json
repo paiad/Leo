@@ -211,6 +211,21 @@
         }
       ]
     },
+    "memory": {
+      "serverId": "memory",
+      "name": "Memory MCP",
+      "type": "stdio",
+      "command": "npx.cmd",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ],
+      "env": {},
+      "url": null,
+      "description": "MCP memory server (knowledge graph based long-term memory)",
+      "enabled": false,
+      "discoveredTools": []
+    },
     "playwright": {
       "serverId": "playwright",
       "name": "playwright",

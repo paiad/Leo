@@ -28,6 +28,7 @@ class ChatRequest(BaseModel):
 
 class CreateSessionRequest(BaseModel):
     title: str | None = None
+    source: Literal["browser", "lark"] = "browser"
 
 
 class MessageRecord(BaseModel):
@@ -45,6 +46,7 @@ class SessionRecord(BaseModel):
     title: str
     createdAt: str
     updatedAt: str
+    source: Literal["browser", "lark"] = "browser"
     messages: list[MessageRecord] = Field(default_factory=list)
 
 

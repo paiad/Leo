@@ -1,10 +1,9 @@
 "use client";
 
-import { SlidersHorizontal } from "lucide-react";
+import { MessageCircle, Monitor } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChatComposer } from "@/features/chat/components/chat-composer";
 import { ChatMessages } from "@/features/chat/components/chat-messages";
-import { ChatSettingsPanel } from "@/features/chat/components/chat-settings-panel";
 import {
   clearChatSessionMessages,
   createChatSession,
@@ -18,9 +17,12 @@ import {
 import type { ChatMessage, ChatRuntimeConfig, ChatTimelineEvent } from "@/features/chat/types/chat";
 import { useModelContext } from "@/features/models/context/model-context";
 
-const CHAT_SESSION_STORAGE_KEY = "leo.chat.sessionId";
+const CHAT_BROWSER_SESSION_STORAGE_KEY = "leo.chat.sessionId.browser";
+const CHAT_LARK_SESSION_STORAGE_KEY = "leo.chat.sessionId.lark";
+const CHAT_ACTIVE_SOURCE_STORAGE_KEY = "leo.chat.activeSource";
 const DEFAULT_PLATFORM_SYSTEM_PROMPT =
   "你是 Leo，AI Agent 工作台助手。你的目标是帮助用户在同一平台内完成聊天、工具调用、知识检索、Agent 协作与工作流执行。";
+type ChatSource = "browser" | "lark";
 
 type StreamProgressDisplayPayload = {
   phase?: string;
@@ -98,15 +100,18 @@ function formatProgressText(
 }
 
 export function ChatShell() {
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
   const [pendingTime, setPendingTime] = useState<string | null>(null);
   const [hasStreamStarted, setHasStreamStarted] = useState(false);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [activeSource, setActiveSource] = useState<ChatSource>("browser");
+  const [sessionBySource, setSessionBySource] = useState<Record<ChatSource, string | null>>({
+    browser: null,
+    lark: null,
+  });
   const [platformSystemPrompt, setPlatformSystemPrompt] = useState(DEFAULT_PLATFORM_SYSTEM_PROMPT);
-  const [runtimeConfig, setRuntimeConfig] = useState<ChatRuntimeConfig>({
+  const [runtimeConfig] = useState<ChatRuntimeConfig>({
     workspacePrompt: "",
   });
   const [isClearingMessages, setIsClearingMessages] = useState(false);
@@ -114,6 +119,7 @@ export function ChatShell() {
   const streamAbortControllerRef = useRef<AbortController | null>(null);
   const { activeModel } = useModelContext();
   const activeModelLabel = activeModel?.name?.trim() || "unknown";
+  const activeSessionId = sessionBySource[activeSource];
 
   const isAbortError = (error: unknown): boolean => {
     if (error instanceof DOMException && error.name === "AbortError") {
@@ -123,6 +129,13 @@ export function ChatShell() {
       return error.name === "AbortError" || error.message === "The operation was aborted.";
     }
     return false;
+  };
+
+  const inferSessionSource = (session: { source?: ChatSource; title: string }): ChatSource => {
+    if (session.source === "lark" || session.source === "browser") {
+      return session.source;
+    }
+    return session.title.trim().toLowerCase().startsWith("feishu-") ? "lark" : "browser";
   };
 
   useEffect(() => {
@@ -151,8 +164,75 @@ export function ChatShell() {
     let cancelled = false;
 
     const initSession = async () => {
+      const storedActiveSource = window.localStorage.getItem(CHAT_ACTIVE_SOURCE_STORAGE_KEY);
+      const preferredSource: ChatSource = storedActiveSource === "lark" ? "lark" : "browser";
+      try {
+        const sessions = await fetchChatSessions();
+
+        const storedBrowserSessionId = window.localStorage.getItem(CHAT_BROWSER_SESSION_STORAGE_KEY);
+        const storedLarkSessionId = window.localStorage.getItem(CHAT_LARK_SESSION_STORAGE_KEY);
+
+        const browserSessions = sessions.filter((session) => inferSessionSource(session) === "browser");
+        const larkSessions = sessions.filter((session) => inferSessionSource(session) === "lark");
+
+        const browserSessionId =
+          (storedBrowserSessionId &&
+          browserSessions.some((session) => session.id === storedBrowserSessionId)
+            ? storedBrowserSessionId
+            : null) ?? browserSessions[0]?.id ?? null;
+        const larkSessionId =
+          (storedLarkSessionId && larkSessions.some((session) => session.id === storedLarkSessionId)
+            ? storedLarkSessionId
+            : null) ?? larkSessions[0]?.id ?? null;
+
+        let ensuredBrowserSessionId = browserSessionId;
+        if (!ensuredBrowserSessionId) {
+          const created = await createChatSession("browser");
+          ensuredBrowserSessionId = created.id;
+        }
+
+        if (cancelled) {
+          return;
+        }
+        setSessionBySource({
+          browser: ensuredBrowserSessionId,
+          lark: larkSessionId,
+        });
+        if (ensuredBrowserSessionId) {
+          window.localStorage.setItem(CHAT_BROWSER_SESSION_STORAGE_KEY, ensuredBrowserSessionId);
+        }
+        if (larkSessionId) {
+          window.localStorage.setItem(CHAT_LARK_SESSION_STORAGE_KEY, larkSessionId);
+        } else {
+          window.localStorage.removeItem(CHAT_LARK_SESSION_STORAGE_KEY);
+        }
+
+        const nextSource: ChatSource =
+          preferredSource === "lark" && larkSessionId ? "lark" : "browser";
+        setActiveSource(nextSource);
+        window.localStorage.setItem(CHAT_ACTIVE_SOURCE_STORAGE_KEY, nextSource);
+        return;
+      } catch (error) {
+        if (!cancelled) {
+          const message = error instanceof Error ? error.message : "初始化会话失败";
+          setRequestError(message);
+        }
+      }
+    };
+
+    void initSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadCurrentSessionMessages = async () => {
       const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
-      const loadHistoryWithRetry = async (targetSessionId: string): Promise<ChatMessage[]> => {
+      const loadWithRetry = async (targetSessionId: string): Promise<ChatMessage[]> => {
         let lastError: unknown;
         for (let attempt = 0; attempt < 2; attempt += 1) {
           try {
@@ -166,95 +246,66 @@ export function ChatShell() {
         }
         throw lastError;
       };
-      const loadSessionAndHistory = async (targetSessionId: string): Promise<boolean> => {
-        const historyMessages = await loadHistoryWithRetry(targetSessionId);
+
+      if (!activeSessionId) {
+        setMessages([]);
+        return;
+      }
+      try {
+        const historyMessages = await loadWithRetry(activeSessionId);
         if (cancelled) {
-          return true;
+          return;
         }
-        setSessionId(targetSessionId);
         setMessages(historyMessages);
-        window.localStorage.setItem(CHAT_SESSION_STORAGE_KEY, targetSessionId);
-        return true;
-      };
-
-      const storedSessionId = window.localStorage.getItem(CHAT_SESSION_STORAGE_KEY);
-
-      if (storedSessionId) {
-        try {
-          const sessions = await fetchChatSessions();
-          const storedSession = sessions.find((session) => session.id === storedSessionId);
-          const isFeishuSession = Boolean(
-            storedSession?.title.trim().toLowerCase().startsWith("feishu-"),
-          );
-          if (isFeishuSession) {
-            window.localStorage.removeItem(CHAT_SESSION_STORAGE_KEY);
-          }
-        } catch {
-          // If session list fetch fails, keep legacy behavior and try stored session directly.
-        }
-
-        const activeStoredSessionId = window.localStorage.getItem(CHAT_SESSION_STORAGE_KEY);
-        if (!activeStoredSessionId) {
-          // Stored session was cleared (e.g. Feishu session); continue fallback flow.
-        } else {
-        try {
-          await loadSessionAndHistory(activeStoredSessionId);
-          return;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "";
-          const shouldResetSession =
-            message.includes("会话不存在") || message.includes("404") || message.includes("HTTP 404");
-
-          if (shouldResetSession) {
-            window.localStorage.removeItem(CHAT_SESSION_STORAGE_KEY);
-          } else if (!cancelled) {
-            setRequestError(message || "历史消息加载失败，请稍后重试");
-          }
-        }
-        }
-      }
-
-      try {
-        const sessions = await fetchChatSessions();
-        const browserSessions = sessions.filter(
-          (session) => !session.title.trim().toLowerCase().startsWith("feishu-"),
-        );
-        for (const session of browserSessions) {
-          try {
-            await loadSessionAndHistory(session.id);
-            return;
-          } catch {
-            // try next session
-          }
-        }
       } catch (error) {
-        if (!cancelled) {
-          const message = error instanceof Error ? error.message : "加载会话列表失败";
-          setRequestError(message);
-        }
-      }
-
-      try {
-        const session = await createChatSession();
         if (cancelled) {
           return;
         }
-        setSessionId(session.id);
-        window.localStorage.setItem(CHAT_SESSION_STORAGE_KEY, session.id);
-      } catch {
-        if (cancelled) {
-          return;
-        }
-        setRequestError("初始化会话失败，请检查后端和数据库连接");
+        const message = error instanceof Error ? error.message : "历史消息加载失败，请稍后重试";
+        setRequestError(message);
       }
     };
 
-    void initSession();
-
+    void loadCurrentSessionMessages();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    if (activeSource !== "lark" || !activeSessionId || isSending) {
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const latest = await fetchChatSessionMessages(activeSessionId);
+        if (cancelled) {
+          return;
+        }
+        setMessages((prev) => {
+          const sameLength = prev.length === latest.length;
+          const prevLastId = prev[prev.length - 1]?.id;
+          const nextLastId = latest[latest.length - 1]?.id;
+          if (sameLength && prevLastId === nextLastId) {
+            return prev;
+          }
+          return latest;
+        });
+      } catch {
+        // keep current messages; polling is best-effort only
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      void poll();
+    }, 4000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeSource, activeSessionId, isSending]);
 
   const appendMessage = (message: ChatMessage) => {
     setMessages((prev) => [...prev, message]);
@@ -282,13 +333,13 @@ export function ChatShell() {
       return;
     }
 
-    if (!sessionId) {
+    if (!activeSessionId) {
       setMessages((prev) => prev.filter((item) => item.id !== message.id));
       return;
     }
 
     try {
-      await deleteChatSessionMessage(sessionId, message.id);
+      await deleteChatSessionMessage(activeSessionId, message.id);
       setMessages((prev) => prev.filter((item) => item.id !== message.id));
     } catch (error) {
       const messageText = error instanceof Error ? error.message : "删除失败，请稍后重试";
@@ -303,8 +354,16 @@ export function ChatShell() {
 
     setIsClearingMessages(true);
     try {
-      if (sessionId) {
-        await clearChatSessionMessages(sessionId);
+      const sessions = await fetchChatSessions();
+      const scopedSessions = sessions.filter(
+        (session) => inferSessionSource(session) === activeSource,
+      );
+      const results = await Promise.allSettled(
+        scopedSessions.map((session) => clearChatSessionMessages(session.id)),
+      );
+      const failedCount = results.filter((result) => result.status === "rejected").length;
+      if (failedCount > 0) {
+        throw new Error(`部分会话清空失败（${failedCount}/${results.length}）`);
       }
       setMessages([]);
       setRequestError(null);
@@ -377,13 +436,17 @@ export function ChatShell() {
     if (isSending) {
       return;
     }
-    let activeSessionId = sessionId;
-    if (!activeSessionId) {
+    let targetSessionId = activeSessionId;
+    if (!targetSessionId) {
       try {
-        const session = await createChatSession();
-        activeSessionId = session.id;
-        setSessionId(session.id);
-        window.localStorage.setItem(CHAT_SESSION_STORAGE_KEY, session.id);
+        const session = await createChatSession(activeSource);
+        targetSessionId = session.id;
+        setSessionBySource((prev) => ({ ...prev, [activeSource]: session.id }));
+        if (activeSource === "browser") {
+          window.localStorage.setItem(CHAT_BROWSER_SESSION_STORAGE_KEY, session.id);
+        } else {
+          window.localStorage.setItem(CHAT_LARK_SESSION_STORAGE_KEY, session.id);
+        }
       } catch {
         setRequestError("创建会话失败，请检查后端和数据库连接");
         return;
@@ -497,7 +560,8 @@ export function ChatShell() {
         },
         {
           ...requestConfig,
-          sessionId: activeSessionId,
+          sessionId: targetSessionId,
+          source: activeSource,
         },
         abortController.signal,
       );
@@ -527,7 +591,8 @@ export function ChatShell() {
         try {
           const assistantMessage = await sendChatMessage(content, {
             ...requestConfig,
-            sessionId: activeSessionId,
+            sessionId: targetSessionId,
+            source: activeSource,
           });
           replaceMessageId(assistantMessageId, assistantMessage.message.id);
           finalAssistantMessageId = assistantMessage.message.id;
@@ -576,20 +641,52 @@ export function ChatShell() {
     streamAbortControllerRef.current?.abort();
   };
 
+  const handleSwitchSource = (source: ChatSource) => {
+    if (isSending) {
+      return;
+    }
+    setActiveSource(source);
+    window.localStorage.setItem(CHAT_ACTIVE_SOURCE_STORAGE_KEY, source);
+    setRequestError(null);
+  };
+
   return (
     <div className="relative -mb-8 -ml-4 -mr-4 -mt-6 h-[calc(100vh-4rem)] overflow-hidden md:-ml-6 md:-mr-6">
-      <button
-        type="button"
-        onClick={() => setSettingsOpen(true)}
-        className="absolute right-3 top-2 z-10 inline-flex h-10 w-10 items-center justify-center rounded-lg text-slate-600 transition-colors hover:text-slate-900 md:right-5"
-        aria-label="打开设置抽屉"
-      >
-        <SlidersHorizontal className="h-5 w-5" />
-      </button>
+      <div className="absolute left-3 top-2 z-10 inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1 shadow-sm md:left-5">
+        <button
+          type="button"
+          onClick={() => handleSwitchSource("browser")}
+          className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+            activeSource === "browser"
+              ? "bg-slate-900 text-white"
+              : "text-slate-600 hover:bg-slate-100"
+          }`}
+        >
+          <span className="inline-flex items-center gap-1.5">
+            <Monitor className="h-3.5 w-3.5" />
+            Browser
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={() => handleSwitchSource("lark")}
+          className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+            activeSource === "lark"
+              ? "bg-slate-900 text-white"
+              : "text-slate-600 hover:bg-slate-100"
+          }`}
+        >
+          <span className="inline-flex items-center gap-1.5">
+            <MessageCircle className="h-3.5 w-3.5" />
+            Lark
+          </span>
+        </button>
+      </div>
       <section className="flex h-[calc(100vh-4rem)] min-w-0 flex-1 flex-col overflow-hidden">
         <div className="min-h-0 flex flex-1 flex-col px-0 pt-0">
           <ChatMessages
             messages={displayMessages}
+            sessionSource={activeSource}
             isLoading={isSending && !hasStreamStarted && pendingAssistantMessageId === null}
             loadingTime={pendingTime}
             loadingModel={activeModelLabel}
@@ -611,35 +708,15 @@ export function ChatShell() {
             onStop={handleStopGeneration}
             onClearMessages={handleClearMessages}
             isClearingMessages={isClearingMessages}
+            clearScopeLabel={activeSource === "lark" ? "Lark" : "Browser"}
+            placeholder={
+              activeSource === "lark"
+                ? "Lark 会话（已持久化）"
+                : "Browser 会话（独立提问）"
+            }
           />
         </div>
       </section>
-
-      <div
-        className={`absolute inset-0 z-20 transition-opacity duration-200 ${
-          settingsOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
-        }`}
-      >
-        <button
-          type="button"
-          onClick={() => setSettingsOpen(false)}
-          className="absolute inset-0 bg-slate-900/20"
-          aria-label="关闭设置抽屉遮罩"
-        />
-        <div
-          className={`absolute bottom-0 right-0 top-0 transition-transform duration-300 ease-out ${
-            settingsOpen ? "translate-x-0" : "translate-x-full"
-          }`}
-        >
-          <ChatSettingsPanel
-            runtimeConfig={runtimeConfig}
-            platformSystemPrompt={platformSystemPrompt}
-            activeModelLabel={activeModelLabel}
-            onApplyRuntimeConfig={setRuntimeConfig}
-            onClose={() => setSettingsOpen(false)}
-          />
-        </div>
-      </div>
     </div>
   );
 }

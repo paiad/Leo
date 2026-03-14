@@ -31,7 +31,7 @@ class _FakeModelService:
 @pytest.mark.asyncio
 async def test_stream_message_persists_reply_when_client_disconnects():
     service = ChatService(
-        store=InMemoryStore(),
+        store=InMemoryStore(enable_persistence=False),
         runtime=_FakeRuntime(),
         model_service=_FakeModelService(),
     )

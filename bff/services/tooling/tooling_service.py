@@ -19,6 +19,11 @@ from bff.repositories.store import InMemoryStore
 
 LEGACY_LOCAL_MCP_SERVER_ID = "openmanus-local"
 DEFAULT_LOCAL_MCP_SERVER_ID = "leo-local"
+DEFAULT_MEMORY_MCP_SERVER_ID = "memory"
+
+
+def _default_npx_command() -> str:
+    return "npx.cmd" if os.name == "nt" else "npx"
 
 
 def _is_truthy_env(value: str | None) -> bool:
@@ -114,6 +119,20 @@ class ToolingService:
                 args=["-m", "app.mcp.server", "--transport", "stdio"],
                 env={},
                 description="Leo built-in MCP server (bash/browser/editor/terminate)",
+                enabled=False,
+                discoveredTools=[],
+            )
+
+        # Provide a ready-to-use Memory MCP template for long-term memory tools.
+        if DEFAULT_MEMORY_MCP_SERVER_ID not in self._store.mcp_servers:
+            self._store.mcp_servers[DEFAULT_MEMORY_MCP_SERVER_ID] = McpServerRecord(
+                serverId=DEFAULT_MEMORY_MCP_SERVER_ID,
+                name="Memory MCP",
+                type="stdio",
+                command=_default_npx_command(),
+                args=["-y", "@modelcontextprotocol/server-memory"],
+                env={},
+                description="MCP memory server (knowledge graph based long-term memory)",
                 enabled=False,
                 discoveredTools=[],
             )

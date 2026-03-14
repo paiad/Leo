@@ -114,11 +114,27 @@ class _SessionMap:
         self._lock = asyncio.Lock()
 
     async def get_or_create(self, chat_id: str) -> str:
+        target_title = f"Feishu-{chat_id}"
         async with self._lock:
             existing = self._map.get(chat_id)
             if existing:
                 return existing
-            session = chat_service.create_session(title=f"Feishu-{chat_id}")
+
+            restored = sorted(
+                (
+                    session
+                    for session in chat_service._store.sessions.values()  # type: ignore[attr-defined]
+                    if (session.title or "").strip().lower() == target_title.lower()
+                ),
+                key=lambda item: item.updatedAt,
+                reverse=True,
+            )
+            if restored:
+                session_id = str(restored[0].id)
+                self._map[chat_id] = session_id
+                return session_id
+
+            session = chat_service.create_session(title=target_title, source="lark")
             session_id = str(session["id"])
             self._map[chat_id] = session_id
             return session_id

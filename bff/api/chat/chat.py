@@ -28,7 +28,8 @@ async def list_sessions() -> dict:
 @router.post('/sessions')
 async def create_session(payload: CreateSessionRequest | None = None) -> dict:
     title = payload.title if payload else None
-    return ok(chat_service.create_session(title))
+    source = payload.source if payload else "browser"
+    return ok(chat_service.create_session(title, source=source))
 
 
 @router.get('/sessions/{session_id}/messages')
@@ -81,4 +82,3 @@ async def chat_messages(payload: ChatRequest) -> dict:
 @router.post('/stream')  # Backward-compatible alias
 async def stream_chat_completion(payload: ChatRequest):
     return await _chat_completion(payload, stream=True)
-

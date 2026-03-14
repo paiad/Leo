@@ -8,6 +8,7 @@ import type { ChatToolEvent } from "@/features/chat/types/chat";
 
 type ChatMessagesProps = {
   messages: ChatMessage[];
+  sessionSource?: "browser" | "lark";
   isLoading?: boolean;
   loadingTime?: string | null;
   loadingModel?: string | null;
@@ -156,6 +157,7 @@ function timelinePhaseDotClass(
 
 export function ChatMessages({
   messages,
+  sessionSource = "browser",
   isLoading = false,
   loadingTime = null,
   loadingModel = null,
@@ -251,8 +253,8 @@ export function ChatMessages({
           const Icon = role.icon;
           const displayLabel =
             message.role === "assistant" && message.model
-              ? `${role.label} | ${message.model}`
-              : role.label;
+              ? `${role.label} | ${message.model} | ${sessionSource === "lark" ? "Lark" : "Browser"}`
+              : `${role.label} | ${sessionSource === "lark" ? "Lark" : "Browser"}`;
           const isPendingAssistantBubble =
             message.role === "assistant" &&
             message.id === pendingAssistantMessageId &&

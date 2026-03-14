@@ -10,6 +10,7 @@ type ChatComposerProps = {
   onStop?: () => void;
   onClearMessages?: () => Promise<void>;
   isClearingMessages?: boolean;
+  clearScopeLabel?: string;
 };
 
 export function ChatComposer({
@@ -19,6 +20,7 @@ export function ChatComposer({
   onStop,
   onClearMessages,
   isClearingMessages = false,
+  clearScopeLabel = "当前来源",
 }: ChatComposerProps) {
   const [draft, setDraft] = useState("");
   const [isClearMenuOpen, setIsClearMenuOpen] = useState(false);
@@ -76,8 +78,10 @@ export function ChatComposer({
               : "pointer-events-none translate-y-2 opacity-0"
           }`}
         >
-          <p className="text-sm font-semibold text-slate-800">清空当前会话消息？</p>
-          <p className="mt-1 text-xs text-slate-500">该操作会删除当前会话中的全部聊天记录。</p>
+          <p className="text-sm font-semibold text-slate-800">清空 {clearScopeLabel} 聊天记录？</p>
+          <p className="mt-1 text-xs text-slate-500">
+            该操作会删除当前来源（{clearScopeLabel}）全部会话中的消息记录。
+          </p>
           <div className="mt-3 flex items-center justify-end gap-2">
             <button
               type="button"

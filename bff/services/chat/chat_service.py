@@ -20,6 +20,7 @@ from bff.domain.models import (
     new_id,
 )
 from bff.repositories.store import InMemoryStore
+from bff.services.memory.memory_sync_service import MemorySyncService
 from bff.services.models.model_service import ModelService
 from bff.services.runtime.agent_runtime import AgentRuntime
 
@@ -35,15 +36,41 @@ def split_chunks(text: str, chunk_size: int = 120) -> list[str]:
 
 
 class ChatService:
-    def __init__(self, store: InMemoryStore, runtime: AgentRuntime, model_service: ModelService):
+    def __init__(
+        self,
+        store: InMemoryStore,
+        runtime: AgentRuntime,
+        model_service: ModelService,
+        memory_sync: MemorySyncService | None = None,
+    ):
         self._store = store
         self._runtime = runtime
         self._model_service = model_service
+        self._memory_sync = memory_sync
         self._lock = asyncio.Lock()
         self._record_lock = asyncio.Lock()
         self._tokenizer = self._init_tokenizer()
         self._record_tz = ZoneInfo("Asia/Shanghai")
         self._record_root = Path(config.root_path) / "logs" / "chat"
+
+    def _schedule_memory_sync(
+        self,
+        *,
+        source: str,
+        session_id: str,
+        question: str,
+        answer: str,
+        model: str | None,
+    ) -> None:
+        if not self._memory_sync:
+            return
+        self._memory_sync.schedule_sync_turn(
+            source=source,
+            session_id=session_id,
+            question=question,
+            answer=answer,
+            model=model or self._model_service.get_runtime_model_name(),
+        )
 
     @staticmethod
     def build_prompt(content: str, workspace_prompt: str | None) -> str:
@@ -294,21 +321,40 @@ class ChatService:
     def model_config(self) -> dict[str, Any]:
         return self._model_service.chat_model_config()
 
+    def _session_source(self, session: SessionRecord) -> str:
+        source = (getattr(session, "source", None) or "").strip().lower()
+        if source in {"browser", "lark"}:
+            return source
+        # Backward compatibility for historical records without source field.
+        if (session.title or "").strip().lower().startswith("feishu-"):
+            return "lark"
+        return "browser"
+
     def list_sessions(self) -> list[dict[str, Any]]:
         sessions = sorted(self._store.sessions.values(), key=lambda x: x.updatedAt, reverse=True)
-        return [session.model_dump(exclude={"messages"}) for session in sessions]
+        result: list[dict[str, Any]] = []
+        for session in sessions:
+            payload = session.model_dump(exclude={"messages"})
+            payload["source"] = self._session_source(session)
+            result.append(payload)
+        return result
 
-    def create_session(self, title: str | None = None) -> dict[str, Any]:
+    def create_session(self, title: str | None = None, *, source: str = "browser") -> dict[str, Any]:
         now = now_iso()
+        source_key = "lark" if source == "lark" else "browser"
         session = SessionRecord(
             id=new_id(),
             title=(title or "New Chat").strip() or "New Chat",
             createdAt=now,
             updatedAt=now,
+            source=source_key,
             messages=[],
         )
         self._store.sessions[session.id] = session
-        return session.model_dump(exclude={"messages"})
+        self._store.persist_sessions()
+        payload = session.model_dump(exclude={"messages"})
+        payload["source"] = self._session_source(session)
+        return payload
 
     def get_session_messages(self, session_id: str) -> list[dict[str, Any]] | None:
         session = self._store.sessions.get(session_id)
@@ -323,6 +369,8 @@ class ChatService:
         before = len(session.messages)
         session.messages = [msg for msg in session.messages if msg.id != message_id]
         session.updatedAt = now_iso()
+        if before != len(session.messages):
+            self._store.persist_sessions()
         return before != len(session.messages)
 
     def clear_session_messages(self, session_id: str) -> int | None:
@@ -332,6 +380,8 @@ class ChatService:
         deleted = len(session.messages)
         session.messages = []
         session.updatedAt = now_iso()
+        if deleted > 0:
+            self._store.persist_sessions()
         return deleted
 
     async def send_message(self, payload: ChatRequest) -> dict[str, Any]:
@@ -339,7 +389,7 @@ class ChatService:
         if not user_text:
             raise ValueError("content 不能为空")
 
-        session = await self._append_user_message(payload.sessionId, user_text)
+        session = await self._append_user_message(payload.sessionId, user_text, payload.source)
         self._session_output_dir(source=payload.source, session_id=session.id).mkdir(
             parents=True, exist_ok=True
         )
@@ -354,6 +404,13 @@ class ChatService:
         )
         assistant = await self._append_assistant_message(session.id, response_text, payload.model)
         await self._append_chat_record(
+            source=payload.source,
+            session_id=session.id,
+            question=user_text,
+            answer=response_text,
+            model=payload.model,
+        )
+        self._schedule_memory_sync(
             source=payload.source,
             session_id=session.id,
             question=user_text,
@@ -382,7 +439,7 @@ class ChatService:
             )
             return
 
-        session = await self._append_user_message(payload.sessionId, user_text)
+        session = await self._append_user_message(payload.sessionId, user_text, payload.source)
         self._session_output_dir(source=payload.source, session_id=session.id).mkdir(
             parents=True, exist_ok=True
         )
@@ -415,6 +472,13 @@ class ChatService:
                 payload.model,
             )
             await self._append_chat_record(
+                source=payload.source,
+                session_id=session.id,
+                question=user_text,
+                answer=response_text,
+                model=payload.model,
+            )
+            self._schedule_memory_sync(
                 source=payload.source,
                 session_id=session.id,
                 question=user_text,
@@ -550,9 +614,14 @@ class ChatService:
                 encoding="utf-8",
             )
 
-    async def _append_user_message(self, session_id: str | None, content: str) -> SessionRecord:
+    async def _append_user_message(
+        self,
+        session_id: str | None,
+        content: str,
+        source: str = "browser",
+    ) -> SessionRecord:
         async with self._lock:
-            session = self._ensure_session(session_id)
+            session = self._ensure_session(session_id, source=source)
             session.messages.append(
                 MessageRecord(
                     id=new_id(),
@@ -562,6 +631,7 @@ class ChatService:
                 )
             )
             session.updatedAt = now_iso()
+            self._store.persist_sessions()
             return session
 
     async def _append_assistant_message(
@@ -583,19 +653,23 @@ class ChatService:
             )
             session.messages.append(message)
             session.updatedAt = now_iso()
+            self._store.persist_sessions()
             return message.model_dump()
 
-    def _ensure_session(self, session_id: str | None) -> SessionRecord:
+    def _ensure_session(self, session_id: str | None, *, source: str = "browser") -> SessionRecord:
         if session_id and session_id in self._store.sessions:
             return self._store.sessions[session_id]
 
         now = now_iso()
+        source_key = "lark" if source == "lark" else "browser"
         session = SessionRecord(
             id=new_id(),
             title="New Chat",
             createdAt=now,
             updatedAt=now,
+            source=source_key,
             messages=[],
         )
         self._store.sessions[session.id] = session
+        self._store.persist_sessions()
         return session

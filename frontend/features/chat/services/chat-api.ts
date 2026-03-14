@@ -16,6 +16,7 @@ type ChatRequestOptions = {
   model?: string;
   baseUrl?: string;
   apiKey?: string;
+  source?: "browser" | "lark";
 };
 
 type ChatMessageApiResponse = {
@@ -58,6 +59,7 @@ type ChatSessionApiResponse = {
     title: string;
     createdAt: string;
     updatedAt: string;
+    source?: "browser" | "lark";
   } | null;
   error: string | null;
 };
@@ -143,6 +145,7 @@ export type ChatSession = {
   title: string;
   createdAt: string;
   updatedAt: string;
+  source?: "browser" | "lark";
 };
 
 type ChatStreamHandlers = {
@@ -218,6 +221,9 @@ function buildChatRequestBody(
   }
   if (options?.apiKey?.trim()) {
     requestBody.apiKey = options.apiKey.trim();
+  }
+  if (options?.source) {
+    requestBody.source = options.source;
   }
   return requestBody;
 }
@@ -542,13 +548,15 @@ export async function fetchChatModelConfig(): Promise<ChatModelConfig> {
   return payload.data;
 }
 
-export async function createChatSession(): Promise<ChatSession> {
+export async function createChatSession(source: "browser" | "lark" = "browser"): Promise<ChatSession> {
   const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE_URL;
   const response = await fetch(`${baseUrl}/api/v1/chat/sessions`, {
     method: "POST",
     headers: {
+      "Content-Type": "application/json",
       Accept: "application/json",
     },
+    body: JSON.stringify({ source }),
   });
 
   if (!response.ok) {

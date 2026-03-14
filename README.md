@@ -357,6 +357,16 @@ python -m uvicorn bff.main:app --host 0.0.0.0 --port 8000
 - 路径变量使用绝对路径（特别是 Windows）
 - 密钥只放 `.env`，不要写入代码和提交记录
 
+### 会话持久化与 Memory MCP
+
+- Chat 会话消息（Browser/Lark）默认持久化到：`config/chat-memory-store.json`
+- 如需自定义会话持久化路径，可在 `.env` 设置：`BFF_CHAT_MEMORY_STORE_PATH=E:\path\chat-memory-store.json`
+- Memory MCP 已提供模板（默认禁用）：`memory`（`@modelcontextprotocol/server-memory`）
+- 启用方式：在前端 MCP 管理或 `config/mcp.bff.json` 中将 `memory.enabled` 设为 `true`
+- 启用后，BFF 会在每轮问答落库后异步同步一条结构化记忆到 Memory MCP（失败不影响主流程）
+- 可通过 `.env` 开关控制同步：`BFF_MEMORY_SYNC_ENABLED=1`（默认开启）
+- 架构规范见：`docs/memory-architecture.md`
+
 ## 开发与测试
 
 运行核心测试：

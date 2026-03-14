@@ -240,6 +240,7 @@ frontend/.env.production.local
 # Local runtime configs (keep examples)
 config/config.toml
 config/mcp.bff.json
+config/chat-memory-store.json
 
 # TypeScript incremental build info
 frontend/*.tsbuildinfo
