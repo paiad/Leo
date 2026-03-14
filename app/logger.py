@@ -1,5 +1,6 @@
+import os
 import sys
-from datetime import datetime
+from pathlib import Path
 
 from loguru import logger as _logger
 
@@ -14,15 +15,26 @@ def define_log_level(print_level="INFO", logfile_level="DEBUG", name: str = None
     global _print_level
     _print_level = print_level
 
-    current_date = datetime.now()
-    formatted_date = current_date.strftime("%Y%m%d%H%M%S")
-    log_name = (
-        f"{name}_{formatted_date}" if name else formatted_date
-    )  # name a log with prefix name
+    base_dir = Path(os.getenv("LOG_DIR", str(PROJECT_ROOT / "logs" / "app"))).expanduser()
+    base_dir.mkdir(parents=True, exist_ok=True)
+    log_filename = f"{name}.log" if name else os.getenv("LOG_FILE_NAME", "app.log")
+    log_file = base_dir / log_filename
+    rotation = os.getenv("LOG_ROTATION", "20 MB")
+    retention = os.getenv("LOG_RETENTION", "14 days")
+    compression = os.getenv("LOG_COMPRESSION", "zip")
 
     _logger.remove()
     _logger.add(sys.stderr, level=print_level)
-    _logger.add(PROJECT_ROOT / f"logs/{log_name}.log", level=logfile_level)
+    _logger.add(
+        log_file,
+        level=logfile_level,
+        rotation=rotation,
+        retention=retention,
+        compression=compression,
+        enqueue=True,
+        backtrace=True,
+        diagnose=False,
+    )
     return _logger
 
 

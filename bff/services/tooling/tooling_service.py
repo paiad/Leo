@@ -15,7 +15,7 @@ from bff.domain.models import (
     McpServerUpdate,
     new_id,
 )
-from bff.repositories.store import InMemoryStore
+from bff.repositories.store import InMemoryStore, PostgresStore
 
 LEGACY_LOCAL_MCP_SERVER_ID = "openmanus-local"
 DEFAULT_LOCAL_MCP_SERVER_ID = "leo-local"
@@ -82,13 +82,16 @@ def _effective_playwright_args(server_id: str, args: list[str] | None) -> list[s
 
 
 class ToolingService:
-    def __init__(self, store: InMemoryStore):
+    def __init__(self, store: InMemoryStore | PostgresStore):
         self._store = store
         self._state_file = Path(config.root_path) / "config" / "mcp.bff.json"
+        self._use_postgres_state = isinstance(store, PostgresStore)
         self._bootstrap_mcp_state()
 
     def _bootstrap_mcp_state(self) -> None:
-        self._load_state_file()
+        # JSON file is used as bootstrap source when DB state is empty, or as fallback backend.
+        if (not self._use_postgres_state) or (not self._store.mcp_servers):
+            self._load_state_file()
 
         # Fallback to current config when state file doesn't exist.
         if not self._store.mcp_servers:
@@ -137,7 +140,7 @@ class ToolingService:
                 discoveredTools=[],
             )
 
-        self._persist_state_file()
+        self._persist_state()
 
     @staticmethod
     def _normalize_local_server_id(server_id: str) -> str:
@@ -232,6 +235,12 @@ class ToolingService:
             encoding="utf-8",
         )
 
+    def _persist_state(self) -> None:
+        if self._use_postgres_state:
+            self._store.persist_mcp_servers()
+            return
+        self._persist_state_file()
+
     def list_tools(self) -> list[dict[str, Any]]:
         builtin_browser_enabled = _is_truthy_env(
             os.getenv("BFF_RUNTIME_ENABLE_BUILTIN_BROWSER_USE", "0")
@@ -310,7 +319,7 @@ class ToolingService:
             discoveredTools=[],
         )
         self._store.mcp_servers[server_id] = record
-        self._persist_state_file()
+        self._persist_state()
         return record.model_dump()
 
     def update_mcp_server(self, server_id: str, payload: McpServerUpdate) -> dict | None:
@@ -326,12 +335,12 @@ class ToolingService:
         if any(k in update for k in {"type", "command", "args", "env", "url"}):
             record.discoveredTools = []
 
-        self._persist_state_file()
+        self._persist_state()
         return record.model_dump()
 
     def delete_mcp_server(self, server_id: str) -> list[dict]:
         self._store.mcp_servers.pop(server_id, None)
-        self._persist_state_file()
+        self._persist_state()
         return self.list_mcp_servers()
 
     async def discover_mcp_server_tools(self, server_id: str) -> list[dict] | None:
@@ -367,7 +376,7 @@ class ToolingService:
                 for tool in response.tools
             ]
             record.discoveredTools = discovered_tools
-            self._persist_state_file()
+            self._persist_state()
             return [tool.model_dump() for tool in record.discoveredTools]
         except ValueError:
             raise

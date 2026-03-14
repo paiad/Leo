@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from app.config import config
 from bff.domain.models import WorkspaceModelCreate, WorkspaceModelUpdate
-from bff.repositories.model_store import ModelSqliteStore
+from bff.repositories.model_store import ModelPostgresStore, ModelSqliteStore
 
 
 def now_iso() -> str:
@@ -14,7 +14,7 @@ def now_iso() -> str:
 
 
 class ModelService:
-    def __init__(self, store: ModelSqliteStore):
+    def __init__(self, store: ModelSqliteStore | ModelPostgresStore):
         self._store = store
         self._ensure_seed_model()
 

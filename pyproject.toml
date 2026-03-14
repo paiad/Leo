@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openmanus"
+version = "0.1.0"
+description = "A versatile agent that can solve various tasks using multiple tools"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+  { name = "mannaandpoem and OpenManus Team", email = "mannaandpoem@gmail.com" }
+]
+license = { text = "MIT" }
+dynamic = ["dependencies"]
+
+[project.urls]
+Homepage = "https://github.com/FoundationAgents/OpenManus"
+
+[project.scripts]
+openmanus = "main:main"
+
+[tool.setuptools.packages.find]
+include = ["app*", "bff*"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }

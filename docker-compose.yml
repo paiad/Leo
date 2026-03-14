@@ -1,0 +1,46 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: openmanus-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-openmanus}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openmanus}
+      POSTGRES_DB: ${POSTGRES_DB:-openmanus}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-openmanus} -d ${POSTGRES_DB:-openmanus}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  bff:
+    profiles: ["fullstack"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: openmanus-bff
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      BFF_DATABASE_URL: ${BFF_DATABASE_URL:-postgresql://openmanus:openmanus@postgres:5432/openmanus}
+      RAG_DATABASE_URL: ${RAG_DATABASE_URL:-postgresql://openmanus:openmanus@postgres:5432/openmanus}
+      LOG_DIR: /app/OpenManus/logs/app
+    command: ["python", "-m", "uvicorn", "bff.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./workspace:/app/OpenManus/workspace
+      - ./logs:/app/OpenManus/logs
+      - ./config:/app/OpenManus/config
+
+volumes:
+  postgres_data:

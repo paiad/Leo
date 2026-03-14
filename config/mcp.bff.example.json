@@ -242,6 +242,7 @@
         "RAG_CHROMA_PATH": "E:\\Github\\OpenManus\\workspace\\rag\\chroma",
         "RAG_VECTOR_COLLECTION": "openmanus_rag",
         "RAG_QDRANT_URL": "http://127.0.0.1:6333",
+        "RAG_DATABASE_URL": "postgresql://openmanus:openmanus@127.0.0.1:5432/openmanus",
         "RAG_SQLITE_PATH": "E:\\Github\\OpenManus\\workspace\\rag\\rag.sqlite3",
         "RAG_HF_CACHE_DIR": "E:\\Github\\OpenManus\\workspace\\rag\\hf-cache",
         "RAG_EMBEDDING_PROVIDER": "local",

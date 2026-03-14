@@ -73,7 +73,10 @@ def _rrf(scores_by_rank: dict[str, dict[str, int]], k: int = 60) -> dict[str, fl
 class RagService:
     def __init__(self, settings: RagSettings):
         self.settings = settings
-        self.store = RagMetadataStore(settings.sqlite_path)
+        self.store = RagMetadataStore(
+            sqlite_path=settings.sqlite_path,
+            database_url=settings.database_url,
+        )
         if settings.vector_backend == "chroma":
             self.vector_store = ChromaVectorStore(
                 persist_path=settings.chroma_path,

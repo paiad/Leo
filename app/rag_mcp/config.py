@@ -18,6 +18,7 @@ class RagSettings:
     vector_collection: str
     qdrant_url: str
     qdrant_api_key: str | None
+    database_url: str | None
     sqlite_path: Path
     embedding_provider: str
     embedding_model: str
@@ -48,6 +49,7 @@ class RagSettings:
             vector_collection=vector_collection,
             qdrant_url=os.getenv("RAG_QDRANT_URL", "http://127.0.0.1:6333").strip(),
             qdrant_api_key=os.getenv("RAG_QDRANT_API_KEY"),
+            database_url=(os.getenv("RAG_DATABASE_URL", "").strip() or None),
             sqlite_path=Path(os.getenv("RAG_SQLITE_PATH", str(sqlite_default))),
             embedding_provider=os.getenv("RAG_EMBEDDING_PROVIDER", "local").strip().lower(),
             embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "BAAI/bge-m3").strip(),

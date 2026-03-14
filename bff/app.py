@@ -8,14 +8,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.logger import logger
-from bff.api.router import router
 from bff.core.response import err
-from bff.services.integration.feishu_long_connection import feishu_long_connection_service
 from bff.utils.env import load_dotenv_into_environ
+
+# Load .env before importing modules that initialize singleton services/stores.
+load_dotenv_into_environ(override=False)
+
+from bff.api.router import router
+from bff.services.integration.feishu_long_connection import feishu_long_connection_service
 
 
 def create_app() -> FastAPI:
-    load_dotenv_into_environ(override=False)
     app = FastAPI(title='Leo BFF', version='0.2.0')
 
     app.add_middleware(

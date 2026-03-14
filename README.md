@@ -315,13 +315,7 @@ stateDiagram-v2
 ### 1) 安装依赖
 
 ```bash
-python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# macOS/Linux:
-# source .venv/bin/activate
-
-pip install -r requirements.txt
+uv sync
 ```
 
 ### 2) 准备配置
@@ -334,17 +328,17 @@ pip install -r requirements.txt
 
 - CLI（OpenManus 主入口）：
 ```bash
-python main.py
+uv run python main.py
 ```
 
 - MCP 模式：
 ```bash
-python run_mcp.py
+uv run python run_mcp.py
 ```
 
 - 多智能体 Flow：
 ```bash
-python run_flow.py
+uv run python run_flow.py
 ```
 
 - Leo BFF（推荐用于前端联调）：
@@ -353,6 +347,45 @@ python -m uvicorn bff.main:app --host 0.0.0.0 --port 8000
 ```
 
 > Windows 下不建议使用 `--reload`，可能导致 Playwright/MCP-stdio 子进程行为异常。
+
+### 4) Docker Desktop 部署（Windows）
+
+1. 复制环境变量模板：
+
+```bash
+copy .env.docker.example .env
+```
+
+2. 只启动 PostgreSQL（推荐开发模式）：
+
+```bash
+docker compose up -d postgres
+```
+
+3. 本地启动 BFF（代码改动即时生效，无需重建镜像）：
+
+```bash
+python -m uvicorn bff.main:app --host 0.0.0.0 --port 8000
+```
+
+4. 如果你想把 BFF 也容器化，再用 fullstack profile：
+
+```bash
+docker compose --profile fullstack up -d --build
+```
+
+5. 查看状态：
+
+```bash
+docker compose ps
+docker compose logs -f bff
+```
+
+默认模式会启动：
+- `postgres`：`localhost:5432`
+
+`fullstack` 模式会额外启动：
+- `bff`：`localhost:8000`
 
 ## RAG 知识库（MCP）
 
@@ -385,7 +418,8 @@ python run_rag_mcp_server.py --transport stdio
 
 - `RAG_VECTOR_BACKEND`：`chroma`（默认）或 `qdrant`
 - `RAG_CHROMA_PATH`：默认 `workspace/rag/chroma`
-- `RAG_SQLITE_PATH`：默认 `workspace/rag/rag.sqlite3`
+- `RAG_DATABASE_URL`：RAG 元数据 PostgreSQL 连接串（推荐）
+- `RAG_SQLITE_PATH`：SQLite 回退路径（仅当未设置 `RAG_DATABASE_URL`）
 - `RAG_EMBEDDING_PROVIDER`：`local`（默认）或 `openai`
 - `RAG_EMBEDDING_MODEL`：默认 `BAAI/bge-m3`
 - `RAG_RERANK_ENABLED`：默认 `true`
@@ -417,10 +451,28 @@ python run_rag_mcp_server.py --transport stdio
 - 布尔变量统一使用：`1/true/yes/on` 或 `0/false/no/off`
 - 路径变量使用绝对路径（特别是 Windows）
 - 密钥只放 `.env`，不要写入代码和提交记录
+- PostgreSQL 持久化建议设置：
+  - `BFF_DATABASE_URL=postgresql://user:pass@host:5432/dbname`
+  - `RAG_DATABASE_URL=postgresql://user:pass@host:5432/dbname`
+
+### 日志规范（推荐）
+
+- 应用日志统一到 `logs/app/app.log`
+- Chat 记录在 `logs/chat/*`
+- 可通过 `.env` 配置轮转策略：
+  - `LOG_DIR`
+  - `LOG_ROTATION`（示例：`20 MB`）
+  - `LOG_RETENTION`（示例：`14 days`）
+  - `LOG_COMPRESSION`（示例：`zip`）
+- 清理历史零散日志（PowerShell）：
+  - `Get-ChildItem .\logs -File | Where-Object { $_.Name -match '^\d{14}\.log$' } | Remove-Item`
 
 ### 会话持久化与 Memory MCP
 
-- Chat 会话消息（Browser/Lark）默认持久化到：`config/chat-memory-store.json`
+- Chat 会话消息（Browser/Lark）：
+  - 设置 `BFF_DATABASE_URL` 时持久化到 PostgreSQL（`chat_sessions/chat_messages`）
+  - 未设置时回退到 `config/chat-memory-store.json`
+  - 首次启用 PostgreSQL 且表为空时，会自动导入 `chat-memory-store.json` 快照
 - 如需自定义会话持久化路径，可在 `.env` 设置：`BFF_CHAT_MEMORY_STORE_PATH=E:\path\chat-memory-store.json`
 - Memory MCP 已提供模板（默认禁用）：`memory`（`@modelcontextprotocol/server-memory`）
 - 启用方式：在前端 MCP 管理或 `config/mcp.bff.json` 中将 `memory.enabled` 设为 `true`

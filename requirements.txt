@@ -51,3 +51,4 @@ pypdf~=5.3.1
 python-docx~=1.1.2
 unstructured~=0.16.23
 python-multipart~=0.0.20
+psycopg[binary]~=3.2.6
