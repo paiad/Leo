@@ -97,6 +97,14 @@ class ManusRuntime:
         # Event callback may differ between stream and non-stream calls.
         agent.event_callback = None
 
+    @staticmethod
+    def _log_final_answer(final_text: str) -> None:
+        text = (final_text or "").strip()
+        if not text:
+            logger.info("🍃 Manus final answer: <empty>")
+            return
+        logger.info(f"🍃 Manus final answer:\n{text}")
+
     async def ask(
         self,
         prompt: str,
@@ -201,6 +209,7 @@ class ManusRuntime:
                 run_result=raw,
                 candidate_final_text=candidate_final,
             )
+            self._log_final_answer(final_text)
 
             await self._progress.emit(
                 progress_callback,
