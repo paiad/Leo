@@ -5,6 +5,7 @@ export type ChatMessage = {
   role: ChatRole;
   content: string;
   createdAt: string;
+  userInputType?: "text" | "audio_asr";
   model?: string;
   toolEvents?: ChatToolEvent[];
   decisionEvents?: ChatDecisionEvent[];

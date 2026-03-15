@@ -135,10 +135,14 @@ class PostgresStore:
                         content TEXT NOT NULL,
                         created_at TEXT NOT NULL,
                         model TEXT,
+                        user_input_type TEXT NOT NULL DEFAULT 'text',
                         tool_events_json TEXT NOT NULL DEFAULT '[]',
                         decision_events_json TEXT NOT NULL DEFAULT '[]'
                     )
                     """
+                )
+                cur.execute(
+                    "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS user_input_type TEXT NOT NULL DEFAULT 'text'"
                 )
                 cur.execute(
                     """
@@ -182,7 +186,7 @@ class PostgresStore:
 
                 cur.execute(
                     """
-                    SELECT id, session_id, role, content, created_at, model, tool_events_json, decision_events_json
+                    SELECT id, session_id, role, content, created_at, model, user_input_type, tool_events_json, decision_events_json
                     FROM chat_messages
                     ORDER BY created_at ASC, id ASC
                     """
@@ -219,6 +223,9 @@ class PostgresStore:
                         content=str(row["content"] or ""),
                         createdAt=str(row["created_at"]),
                         model=row["model"],
+                        userInputType=(
+                            "audio_asr" if str(row.get("user_input_type") or "text") == "audio_asr" else "text"
+                        ),
                         toolEvents=tool_events if isinstance(tool_events, list) else [],
                         decisionEvents=decision_events if isinstance(decision_events, list) else [],
                     )
@@ -361,9 +368,9 @@ class PostgresStore:
                             cur.executemany(
                                 """
                                 INSERT INTO chat_messages (
-                                    id, session_id, role, content, created_at, model, tool_events_json, decision_events_json
+                                    id, session_id, role, content, created_at, model, user_input_type, tool_events_json, decision_events_json
                                 )
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                                 """,
                                 [
                                     (
@@ -373,6 +380,7 @@ class PostgresStore:
                                         msg.content,
                                         msg.createdAt,
                                         msg.model,
+                                        ("audio_asr" if msg.userInputType == "audio_asr" else "text"),
                                         json.dumps(msg.toolEvents or [], ensure_ascii=False),
                                         json.dumps(msg.decisionEvents or [], ensure_ascii=False),
                                     )

@@ -69,6 +69,23 @@ class RuntimeMcpRouter:
         "接口",
         "api",
     }
+    _TOOLING_META_QUERY_HINTS = {
+        "有哪些",
+        "都有什么",
+        "工具列表",
+        "server list",
+        "list",
+        "available",
+        "show",
+        "what mcp tools",
+        "what tools",
+        "怎么配置",
+        "如何配置",
+        "配置",
+        "连接",
+        "启用",
+        "禁用",
+    }
     _SEARCH_HINTS = {
         "search",
         "web search",
@@ -79,6 +96,26 @@ class RuntimeMcpRouter:
         "搜索",
         "检索",
         "资讯",
+    }
+    _TRENDRADAR_NEWS_HINTS = {
+        "news",
+        "rss",
+        "hot",
+        "trend",
+        "top",
+        "热点",
+        "热搜",
+        "趋势",
+        "新闻",
+        "抖音",
+        "微博",
+        "知乎",
+        "头条",
+        "douyin",
+        "weibo",
+        "zhihu",
+        "toutiao",
+        "baidu",
     }
     _REPO_HINTS = {
         "github",
@@ -151,10 +188,34 @@ class RuntimeMcpRouter:
     def _is_rag_negative_opt_out(self, prompt_text: str) -> bool:
         return any(hint in prompt_text for hint in self._RAG_NEGATIVE_HINTS)
 
+    def _looks_like_trendradar_news_request(self, prompt_text: str) -> bool:
+        if not prompt_text:
+            return False
+        return any(hint in prompt_text for hint in self._TRENDRADAR_NEWS_HINTS)
+
     def _is_tooling_meta_query(self, prompt_text: str) -> bool:
-        if "mcp" in prompt_text and ("tool" in prompt_text or "server" in prompt_text):
+        if any(hint in prompt_text for hint in {"mcp工具", "mcp 服务器", "mcp工具列表"}):
             return True
-        return any(hint in prompt_text for hint in {"mcp工具", "mcp 服务器", "mcp工具列表"})
+
+        contains_mcp = "mcp" in prompt_text
+        contains_meta_nouns = any(
+            hint in prompt_text
+            for hint in {"tool", "tools", "server", "servers", "工具", "服务器"}
+        )
+        if not (contains_mcp and contains_meta_nouns):
+            return False
+
+        # Prevent false positives when wrappers mention MCP/tool/server while
+        # the actual user ask is a concrete business task (e.g. hot-news query).
+        if self._looks_like_trendradar_news_request(prompt_text):
+            return False
+        if any(hint in prompt_text for hint in (self._SEARCH_HINTS | self._BROWSER_ACTION_HINTS | self._REPO_HINTS)):
+            return False
+
+        if any(hint in prompt_text for hint in self._TOOLING_META_QUERY_HINTS):
+            return True
+
+        return False
 
     def _looks_like_knowledge_qa(self, prompt_text: str) -> bool:
         if not prompt_text:
@@ -177,6 +238,20 @@ class RuntimeMcpRouter:
             return False
         return self._looks_like_knowledge_qa(prompt_text)
 
+    def should_force_trendradar_for_prompt(self, prompt: str) -> bool:
+        """
+        Determine whether this prompt is a concrete news/hot-topic request that
+        should prefer TrendRadar tools.
+        """
+        if not self._is_truthy_env(os.getenv("BFF_RUNTIME_FORCE_TRENDRADAR_FOR_NEWS", "1")):
+            return False
+        prompt_text = self._normalize_text(self._extract_current_user_request(prompt))
+        if not prompt_text:
+            return False
+        if self._is_tooling_meta_query(prompt_text):
+            return False
+        return self._looks_like_trendradar_news_request(prompt_text)
+
     def _looks_like_browser_action_request(self, prompt_text: str) -> bool:
         if not prompt_text:
             return False
@@ -187,6 +262,10 @@ class RuntimeMcpRouter:
             return "general"
         if self._is_tooling_meta_query(prompt_text):
             return "tooling_meta"
+        # Prefer TrendRadar for news/hot-topic asks even if the user also says
+        # "打开" or other browser words.
+        if self._looks_like_trendradar_news_request(prompt_text):
+            return "web_search"
         if self._looks_like_browser_action_request(prompt_text):
             return "browser_automation"
         if any(hint in prompt_text for hint in self._REPO_HINTS):
@@ -213,7 +292,13 @@ class RuntimeMcpRouter:
                 prompt_text, server
             )
         if intent == "web_search":
-            return sid == "exa" or self._server_explicitly_mentioned(prompt_text, server)
+            if sid == "trendradar":
+                return self._looks_like_trendradar_news_request(
+                    prompt_text
+                ) or self._server_explicitly_mentioned(prompt_text, server)
+            if sid == "exa":
+                return True
+            return self._server_explicitly_mentioned(prompt_text, server)
         if intent == "repo_ops":
             return sid == "github" or self._server_explicitly_mentioned(
                 prompt_text, server
@@ -227,9 +312,14 @@ class RuntimeMcpRouter:
     def _server_priority(self, prompt_text: str, server_id: str) -> int:
         sid = self._normalize_text(server_id)
         intent = self._classify_intent(prompt_text)
+        trendradar_news_request = self._looks_like_trendradar_news_request(prompt_text)
 
         if sid == "playwright":
             return 0 if intent == "browser_automation" else 40
+        if sid == "trendradar":
+            if intent == "web_search":
+                return 12 if trendradar_news_request else 58
+            return 58
         if sid == "rag":
             if intent == "knowledge_qa":
                 return 5
@@ -240,7 +330,9 @@ class RuntimeMcpRouter:
             return 50
         if sid == "exa":
             if intent == "web_search":
-                return 20
+                # Keep Exa as fallback for broad web search, but let TrendRadar
+                # win for news/hot-topic/platform-focused asks.
+                return 30 if trendradar_news_request else 20
             return 55
         return 60
 

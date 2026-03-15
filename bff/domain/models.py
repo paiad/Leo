@@ -24,6 +24,7 @@ class ChatRequest(BaseModel):
     sessionId: str | None = None
     toolMode: Literal["auto", "ban"] = "auto"
     source: Literal["browser", "lark"] = "browser"
+    userInputType: Literal["text", "audio_asr"] = "text"
 
 
 class CreateSessionRequest(BaseModel):
@@ -39,6 +40,7 @@ class MessageRecord(BaseModel):
     model: str | None = None
     toolEvents: list[dict[str, Any]] = Field(default_factory=list)
     decisionEvents: list[dict[str, Any]] = Field(default_factory=list)
+    userInputType: Literal["text", "audio_asr"] = "text"
 
 
 class SessionRecord(BaseModel):

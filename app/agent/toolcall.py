@@ -215,6 +215,12 @@ class ToolCallAgent(ReActAgent):
                     "such as `mcp_playwright_browser_navigate`, "
                     "`mcp_playwright_browser_type`, `mcp_playwright_browser_click`."
                 )
+            if self._should_block_python_news_scraping(name=name, args=args):
+                return (
+                    "Error: Policy blocked `python_execute` news scraping while TrendRadar MCP is available. "
+                    "For hot/news requests, use TrendRadar MCP tools such as "
+                    "`mcp_trendradar_get_latest_news` or `mcp_trendradar_search_news`."
+                )
 
             # Execute the tool
             logger.info(f"🔧 Activating tool: '{name}'...")
@@ -330,6 +336,118 @@ class ToolCallAgent(ReActAgent):
             return False
 
         if self._user_explicitly_requests_python_browser_script():
+            return False
+
+        return True
+
+    @staticmethod
+    def _contains_news_scraping_code(code: str) -> bool:
+        if not code:
+            return False
+
+        patterns = (
+            r"douyin\.com/hot",
+            r"weibo\.com/(?:hot|top|rank)",
+            r"zhihu\.com/(?:hot|billboard)",
+            r"toutiao",
+            r"(?:requests|httpx)\.(?:get|post)\s*\(",
+            r"\bBeautifulSoup\b",
+            r"\bbs4\b",
+        )
+        if not any(
+            re.search(pattern, code, flags=re.IGNORECASE | re.MULTILINE)
+            for pattern in patterns
+        ):
+            return False
+
+        news_hints = (
+            "hot",
+            "hotspot",
+            "trend",
+            "top",
+            "news",
+            "rss",
+            "热点",
+            "热搜",
+            "趋势",
+            "新闻",
+            "抖音",
+            "微博",
+            "知乎",
+            "头条",
+        )
+        lowered = code.lower()
+        return any(hint in lowered for hint in news_hints)
+
+    def _has_trendradar_tools(self) -> bool:
+        return any(
+            str(tool_name).startswith("mcp_trendradar_")
+            for tool_name in self.available_tools.tool_map.keys()
+        )
+
+    def _user_explicitly_requests_python_news_script(self) -> bool:
+        last_user_text = ""
+        for msg in reversed(self.memory.messages):
+            if msg.role == "user" and msg.content:
+                if self.next_step_prompt and (
+                    msg.content.strip() == self.next_step_prompt.strip()
+                ):
+                    continue
+                last_user_text = msg.content.lower()
+                break
+
+        if not last_user_text:
+            return False
+
+        python_hints = (
+            "python script",
+            "python 脚本",
+            "用python",
+            "用 python",
+            "写脚本",
+            "爬虫",
+            "crawler",
+            "抓取",
+        )
+        news_hints = (
+            "news",
+            "hot",
+            "trend",
+            "热点",
+            "热搜",
+            "新闻",
+            "抖音",
+            "微博",
+            "知乎",
+            "头条",
+        )
+        return any(h in last_user_text for h in python_hints) and any(
+            h in last_user_text for h in news_hints
+        )
+
+    def _should_block_python_news_scraping(
+        self, name: str, args: dict[str, Any]
+    ) -> bool:
+        if name != "python_execute":
+            return False
+
+        if (
+            os.getenv("BFF_ALLOW_PY_NEWS_SCRAPING", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        ):
+            return False
+
+        code = args.get("code")
+        if not isinstance(code, str):
+            return False
+
+        if not self._has_trendradar_tools():
+            return False
+
+        if not self._contains_news_scraping_code(code):
+            return False
+
+        if self._user_explicitly_requests_python_news_script():
             return False
 
         return True

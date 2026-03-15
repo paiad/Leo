@@ -43,3 +43,71 @@ async def test_resolve_user_input_text_from_audio_message(monkeypatch):
     }
     assert await feishu_module._resolve_user_input_text(message) == "这是语音转写文本"
 
+
+@pytest.mark.asyncio
+async def test_handle_receive_event_audio_resolve_exception_returns_gracefully(monkeypatch):
+    async def fake_should_reply(_event: dict, _message: dict) -> bool:
+        return True
+
+    async def fake_resolve_user_input_text(_message: dict) -> str:
+        raise RuntimeError("asr error")
+
+    sent_messages: list[str] = []
+
+    async def fake_send_text_message(_chat_id: str, text: str) -> None:
+        sent_messages.append(text)
+
+    monkeypatch.setattr(feishu_module, "_should_reply", lambda _event, _message: True)
+    monkeypatch.setattr(feishu_module, "_resolve_user_input_text", fake_resolve_user_input_text)
+    monkeypatch.setattr(feishu_module, "_send_text_message", fake_send_text_message)
+
+    event = {
+        "message": {
+            "chat_id": "oc_123",
+            "chat_type": "p2p",
+            "message_id": "om_123",
+            "message_type": "audio",
+            "content": '{"file_key":"file_v3_audio_789"}',
+        },
+        "sender": {"sender_type": "user"},
+    }
+    await feishu_module._handle_receive_event(event)
+    assert any("语音识别失败" in item for item in sent_messages)
+
+
+@pytest.mark.asyncio
+async def test_download_audio_resource_uses_file_type(monkeypatch):
+    class _Resp:
+        status_code = 200
+        headers = {"content-type": "audio/ogg"}
+        content = b"ok"
+        text = ""
+
+        def raise_for_status(self):
+            return None
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            self.last_params = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, _url, params=None, headers=None):
+            self.last_params = params
+            assert params == {"type": "file"}
+            assert headers and "Authorization" in headers
+            return _Resp()
+
+    class _TokenStore:
+        async def get(self) -> str:
+            return "token_xxx"
+
+    monkeypatch.setattr(feishu_module, "_token_store", _TokenStore())
+    monkeypatch.setattr(feishu_module.httpx, "AsyncClient", _Client)
+
+    data = await feishu_module._download_audio_resource("om_xxx", "file_xxx")
+    assert data == b"ok"

@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     content TEXT NOT NULL,
     created_at TEXT NOT NULL,
     model TEXT,
+    user_input_type TEXT NOT NULL DEFAULT 'text',
     tool_events_json TEXT NOT NULL DEFAULT '[]',
     decision_events_json TEXT NOT NULL DEFAULT '[]'
 );

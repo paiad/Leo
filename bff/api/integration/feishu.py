@@ -319,10 +319,22 @@ async def _download_audio_resource(message_id: str, file_key: str) -> bytes:
     async with httpx.AsyncClient(timeout=40.0) as client:
         response = await client.get(
             resource_url,
-            params={"type": "audio"},
+            # Feishu message resource API uses `type=file` for audio/video/file resources.
+            params={"type": "file"},
             headers=headers,
         )
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        body_preview = ""
+        try:
+            body_preview = response.text[:500]
+        except Exception:
+            body_preview = "<unavailable>"
+        raise RuntimeError(
+            "Feishu audio resource HTTP error: "
+            f"status={response.status_code}, body={body_preview}"
+        ) from exc
 
     content_type = str(response.headers.get("content-type") or "").lower()
     if "application/json" in content_type:
@@ -398,7 +410,25 @@ async def _handle_receive_event(event: dict[str, Any]) -> None:
     if not _should_reply(event, message):
         return
 
-    user_text = await _resolve_user_input_text(message)
+    try:
+        user_text = await _resolve_user_input_text(message)
+    except Exception:
+        logger.exception(
+            "Failed to resolve Feishu message content: "
+            f"chat_id={chat_id}, message_id={message_id}, msg_type={msg_type}"
+        )
+        try:
+            if msg_type == "audio":
+                await _send_text_message(chat_id, "语音识别失败，请重试或改发文字。")
+            else:
+                await _send_text_message(chat_id, "处理消息时发生错误，请稍后重试。")
+        except Exception:
+            logger.exception(
+                "Failed to send Feishu content-resolve fallback message: "
+                f"chat_id={chat_id}, message_id={message_id}"
+            )
+        return
+
     if not user_text:
         msg_type = str(message.get("message_type") or "")
         logger.info(
@@ -411,6 +441,13 @@ async def _handle_receive_event(event: dict[str, Any]) -> None:
             await _send_text_message(chat_id, "目前仅支持文本和语音消息。")
         return
 
+    if msg_type == "audio":
+        preview = user_text if len(user_text) <= 300 else f"{user_text[:300]}...(truncated)"
+        logger.info(
+            "Feishu audio ASR transcript: "
+            f"chat_id={chat_id}, message_id={message_id}, text={preview}"
+        )
+
     session_id = await _session_map.get_or_create(chat_id)
     logger.info(
         "Feishu message accepted for model processing: "
@@ -418,7 +455,12 @@ async def _handle_receive_event(event: dict[str, Any]) -> None:
     )
     try:
         result = await chat_service.send_message(
-            ChatRequest(content=user_text, sessionId=session_id, source="lark")
+            ChatRequest(
+                content=user_text,
+                sessionId=session_id,
+                source="lark",
+                userInputType="audio_asr" if msg_type == "audio" else "text",
+            )
         )
         assistant_text = str((result.get("data") or {}).get("content") or "").strip()
         if not assistant_text:

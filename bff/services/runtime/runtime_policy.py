@@ -153,13 +153,20 @@ class RuntimePolicy:
 
     @staticmethod
     def has_rag_tool_activity(messages: list[Any]) -> bool:
-        rag_prefix = "mcp_rag_"
+        return RuntimePolicy.has_server_tool_activity(messages, "rag")
+
+    @staticmethod
+    def has_server_tool_activity(messages: list[Any], server_id: str) -> bool:
+        server_id = (server_id or "").strip().lower()
+        if not server_id:
+            return False
+        prefix = f"mcp_{server_id}_"
         for message in messages:
             role = getattr(message, "role", None)
             role_value = getattr(role, "value", role)
             if role_value == "tool":
                 tool_name = str(getattr(message, "name", "") or "").strip().lower()
-                if tool_name.startswith(rag_prefix):
+                if tool_name.startswith(prefix):
                     return True
                 continue
             if role_value != "assistant":
@@ -168,7 +175,7 @@ class RuntimePolicy:
             for call in tool_calls:
                 function = getattr(call, "function", None)
                 name = str(getattr(function, "name", "") or "").strip().lower()
-                if name.startswith(rag_prefix):
+                if name.startswith(prefix):
                     return True
         return False
 
@@ -179,5 +186,16 @@ class RuntimePolicy:
             "你必须至少调用一次 mcp_rag_search 工具，再给出最终答复。\n"
             "调用参数要求：top_k=8, with_rerank=true。\n"
             "若知识库未命中，请明确说明“知识库未命中”，并给出下一步建议。"
+        )
+        return f"{prompt}\n\n{reminder}"
+
+    @staticmethod
+    def build_forced_trendradar_retry_prompt(prompt: str) -> str:
+        reminder = (
+            "[Runtime Enforcement]\n"
+            "你必须至少调用一次 TrendRadar MCP 工具，再给出最终答复。\n"
+            "优先调用 mcp_trendradar_get_latest_news；\n"
+            "如需关键词检索可调用 mcp_trendradar_search_news。\n"
+            "必须基于 TrendRadar 工具返回的数据作答，不要改用 python_execute 抓网页。\n"
         )
         return f"{prompt}\n\n{reminder}"

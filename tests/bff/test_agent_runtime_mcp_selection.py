@@ -138,12 +138,66 @@ def test_mcp_ranking_prefers_exa_for_search_request():
     router = RuntimeMcpRouter(store=None)
     servers = [
         SimpleNamespace(serverId="exa"),
+        SimpleNamespace(serverId="trendradar"),
         SimpleNamespace(serverId="playwright"),
     ]
     prompt = "[Current User Request]\n帮我搜索今天AI新闻"
 
     ranked = router._rank_selected_servers(prompt, servers)
-    assert ranked[0].serverId == "exa"
+    assert ranked[0].serverId == "trendradar"
+
+
+def test_mcp_selection_prefers_trendradar_for_douyin_hot_news():
+    runtime = ManusRuntime(store=None)
+    trendradar = SimpleNamespace(
+        serverId="trendradar",
+        name="trendradar",
+        description="TrendRadar MCP Server",
+        discoveredTools=[],
+    )
+    exa = SimpleNamespace(
+        serverId="exa",
+        name="exa",
+        description="web search server",
+        discoveredTools=[],
+    )
+    prompt = (
+        "[Current User Request]\n"
+        "搜索抖音今日热点top5"
+    )
+
+    assert runtime._should_connect_server(prompt, trendradar) is True
+    assert runtime._should_connect_server(prompt, exa) is False
+
+
+def test_tooling_meta_detection_ignores_wrapper_noise_when_task_is_news():
+    router = RuntimeMcpRouter(store=None)
+    prompt = (
+        "[Current User Request]\n"
+        "你是助手，可以使用 mcp tools server。请搜索抖音今日热点top5"
+    )
+
+    assert (
+        router._classify_intent(
+            router._normalize_text(router._extract_current_user_request(prompt))
+        )
+        == "web_search"
+    )
+
+
+def test_tooling_meta_query_with_news_keywords_should_not_override_to_meta():
+    router = RuntimeMcpRouter(store=None)
+    prompt = (
+        "[Current User Request]\n"
+        "你是助手，可以使用 mcp tools server，并检查配置。抖音新闻top20"
+    )
+
+    assert (
+        router._classify_intent(
+            router._normalize_text(router._extract_current_user_request(prompt))
+        )
+        == "web_search"
+    )
 
 
 def test_browser_intent_blocks_exa_default_match():
@@ -176,3 +230,13 @@ def test_browser_intent_allows_explicitly_named_nondefault_server():
     )
 
     assert runtime._should_connect_server(prompt, exa) is True
+
+
+def test_news_keywords_override_browser_wording_to_trendradar():
+    router = RuntimeMcpRouter(store=None)
+    prompt = "[Current User Request]\n打开抖音今日热点top5"
+
+    intent = router._classify_intent(
+        router._normalize_text(router._extract_current_user_request(prompt))
+    )
+    assert intent == "web_search"

@@ -59,12 +59,18 @@ function formatShanghaiTimeToMinute(value: string | null | undefined): string {
   if (Number.isNaN(parsed.getTime())) {
     return raw;
   }
-  return new Intl.DateTimeFormat("zh-CN", {
+  const parts = new Intl.DateTimeFormat("zh-CN", {
     timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
-  }).format(parsed);
+  }).formatToParts(parsed);
+  const part = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}`;
 }
 
 function timelinePhaseLabel(event: NonNullable<ChatMessage["timelineEvents"]>[number]): string {
@@ -268,6 +274,11 @@ export function ChatMessages({
                 <div className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
                   <Icon className="h-3.5 w-3.5" />
                   {displayLabel}
+                  {message.role === "user" && message.userInputType === "audio_asr" ? (
+                    <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[11px] font-medium text-sky-700">
+                      audio
+                    </span>
+                  ) : null}
                   <span className="text-slate-400">{formatShanghaiTimeToMinute(message.createdAt)}</span>
                 </div>
                 {shouldRenderToolPanelInAssistant ? (

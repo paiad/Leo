@@ -10,6 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import tiktoken
+from opencc import OpenCC
 from app.config import config
 from app.logger import logger
 from app.prompt.manus import SYSTEM_PROMPT
@@ -55,6 +56,8 @@ class ChatService:
         self._tokenizer = self._init_tokenizer()
         self._record_tz = ZoneInfo("Asia/Shanghai")
         self._record_root = Path(config.root_path) / "logs" / "chat"
+        self._opencc_converter: OpenCC | None = None
+        self._opencc_init_failed = False
 
     def _schedule_memory_sync(
         self,
@@ -470,6 +473,7 @@ class ChatService:
             payload.sessionId,
             user_text,
             payload.source,
+            payload.userInputType,
         )
         self._session_output_dir(source=payload.source, session_id=session.id).mkdir(
             parents=True, exist_ok=True
@@ -484,6 +488,7 @@ class ChatService:
         response_text = await self._runtime.ask(
             runtime_prompt
         )
+        response_text = self._to_simplified_chinese(response_text)
         assistant = await self._append_assistant_message(session.id, response_text, payload.model)
         if payload.source == "lark":
             self._schedule_post_turn_persist(
@@ -527,6 +532,7 @@ class ChatService:
             payload.sessionId,
             user_text,
             payload.source,
+            payload.userInputType,
         )
         self._session_output_dir(source=payload.source, session_id=session.id).mkdir(
             parents=True, exist_ok=True
@@ -540,6 +546,7 @@ class ChatService:
             await progress_queue.put(event)
 
         async def persist_response(response_text: str) -> dict[str, Any]:
+            response_text = self._to_simplified_chinese(response_text)
             nonlocal has_persisted_response
             if has_persisted_response:
                 messages = self.get_session_messages(session.id) or []
@@ -617,7 +624,8 @@ class ChatService:
 
             response_text = await response_task
             assistant = await persist_response(response_text)
-            for chunk in split_chunks(response_text):
+            normalized_response_text = str(assistant.get("content") or "")
+            for chunk in split_chunks(normalized_response_text):
                 yield sse_event("chunk", {"content": chunk})
                 await asyncio.sleep(0)
             yield sse_event(
@@ -653,6 +661,32 @@ class ChatService:
     @staticmethod
     def _is_truthy_env(value: str | None) -> bool:
         return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _to_simplified_chinese(self, text: str) -> str:
+        if not text:
+            return text
+        if not self._is_truthy_env(os.getenv("BFF_FORCE_SIMPLIFIED_CHINESE", "1")):
+            return text
+        if self._opencc_init_failed:
+            return text
+        if self._opencc_converter is None:
+            try:
+                self._opencc_converter = OpenCC("t2s")
+            except Exception as exc:
+                self._opencc_init_failed = True
+                logger.warning(
+                    "Simplified-Chinese normalization disabled: OpenCC init failed: "
+                    f"{exc}"
+                )
+                return text
+        try:
+            return str(self._opencc_converter.convert(text))
+        except Exception as exc:
+            logger.warning(
+                "Simplified-Chinese normalization failed during convert: "
+                f"{exc}"
+            )
+            return text
 
     async def _append_chat_record(
         self,
@@ -713,16 +747,19 @@ class ChatService:
         session_id: str | None,
         content: str,
         source: str = "browser",
+        user_input_type: str = "text",
     ) -> tuple[SessionRecord, str]:
         async with self._lock:
             session = self._ensure_session(session_id, source=source)
             message_id = new_id()
+            normalized_input_type = "audio_asr" if user_input_type == "audio_asr" else "text"
             session.messages.append(
                 MessageRecord(
                     id=message_id,
                     role="user",
                     content=content,
                     createdAt=now_iso(),
+                    userInputType=normalized_input_type,
                 )
             )
             session.updatedAt = now_iso()
