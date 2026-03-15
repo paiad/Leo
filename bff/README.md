@@ -38,6 +38,8 @@ cd E:\Github\OpenManus
 - `GET/POST/PUT/DELETE /api/v1/mcp/servers`
 - `POST /api/v1/mcp/servers/{server_id}/discover`
 - `GET /api/v1/mcp/servers/{server_id}/tools`
+- `POST /api/v1/mcp/servers/{server_id}/profile/generate`
+- `POST /api/v1/mcp/servers/profile/backfill`
 - `POST /api/v1/rag/upload`
 - `POST /api/v1/rag/index`
 - `POST /api/v1/rag/search`
@@ -57,6 +59,11 @@ cd E:\Github\OpenManus
 - `discover` 会真实连接 MCP（`stdio/sse`）并调用 `tools/list`。
 - 默认注入 `leo-local` 模板（`python -m app.mcp.server`，默认禁用）。
 - 已统一错误返回结构：`{ success, data, error }`。
+
+### MCP 路由（general intent）
+
+当用户意图被判定为 `general` 且未显式点名某个 MCP server 时，运行时会基于 MCP server 的元数据做匹配召回：`name/description/capabilityProfile/discoveredTools`。
+建议为业务型 MCP server 维护 `category=domain`，并在 `capabilityProfile` 中写入关键词与示例问法；通用基础设施 MCP（如浏览器/搜索/RAG）建议标记为 `category=infra`，避免在闲聊中被误召回。
 
 ## Playwright 登录态持久化
 

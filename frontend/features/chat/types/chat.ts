@@ -51,6 +51,8 @@ export type ChatMcpServer = {
   env: Record<string, string>;
   url?: string | null;
   description: string;
+  category?: string;
+  capabilityProfile?: Record<string, unknown>;
   enabled: boolean;
   discoveredTools: ChatMcpDiscoveredTool[];
 };

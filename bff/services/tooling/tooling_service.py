@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from app.config import config
+from app.llm import LLM
+from app.logger import logger
 from app.tool.mcp import MCPClients
 from bff.domain.models import (
     McpDiscoveredTool,
@@ -87,6 +89,7 @@ class ToolingService:
         self._state_file = Path(config.root_path) / "config" / "mcp.bff.json"
         self._use_postgres_state = isinstance(store, PostgresStore)
         self._bootstrap_mcp_state()
+        self._profile_llm = None
 
     def _bootstrap_mcp_state(self) -> None:
         # JSON file is used only in non-DB mode. When Postgres is enabled, the DB is the
@@ -184,6 +187,23 @@ class ToolingService:
             else:
                 normalized[key] = str(env_value)
         return normalized
+
+    @staticmethod
+    def _normalize_capability_profile(value: Any) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            candidate = value.strip()
+            if candidate.startswith("{") and candidate.endswith("}"):
+                try:
+                    parsed = json.loads(candidate)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except Exception:
+                    return {}
+        return {}
 
     @classmethod
     def _normalize_connection_meta(
@@ -338,6 +358,8 @@ class ToolingService:
             env=self._normalize_env(payload.env),
             url=payload.url,
             description=payload.description or "",
+            category=(payload.category or "domain"),
+            capabilityProfile=self._normalize_capability_profile(payload.capabilityProfile),
             enabled=payload.enabled if payload.enabled is not None else True,
             discoveredTools=[],
         )
@@ -351,6 +373,10 @@ class ToolingService:
             return None
 
         update = payload.model_dump(exclude_unset=True)
+        if "env" in update:
+            update["env"] = self._normalize_env(update.get("env"))
+        if "capabilityProfile" in update:
+            update["capabilityProfile"] = self._normalize_capability_profile(update.get("capabilityProfile"))
         for key, value in update.items():
             setattr(record, key, value)
 
@@ -360,6 +386,141 @@ class ToolingService:
 
         self._persist_state()
         return record.model_dump()
+
+    @staticmethod
+    def _is_truthy_env(value: str | None) -> bool:
+        return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _get_profile_llm(self) -> LLM:
+        if self._profile_llm is not None:
+            return self._profile_llm
+        config_name = str(os.getenv("BFF_MCP_PROFILE_LLM_CONFIG", "default") or "default").strip()
+        self._profile_llm = LLM(config_name=config_name)
+        return self._profile_llm
+
+    @staticmethod
+    def _extract_json_object(raw_text: str) -> dict[str, Any] | None:
+        if not raw_text:
+            return None
+        text = raw_text.strip()
+        try:
+            parsed = json.loads(text)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            pass
+
+        first = text.find("{")
+        last = text.rfind("}")
+        if first >= 0 and last > first:
+            try:
+                parsed = json.loads(text[first : last + 1].strip())
+                return parsed if isinstance(parsed, dict) else None
+            except Exception:
+                return None
+        return None
+
+    async def generate_mcp_server_capability_profile(
+        self,
+        server_id: str,
+        *,
+        force: bool = False,
+    ) -> dict | None:
+        record = self._store.mcp_servers.get(server_id)
+        if not record:
+            return None
+
+        existing = getattr(record, "capabilityProfile", None)
+        if isinstance(existing, dict) and existing and not force:
+            return record.model_dump()
+
+        if not self._is_truthy_env(os.getenv("BFF_MCP_PROFILE_GENERATION_ENABLED", "1")):
+            raise ValueError("capabilityProfile generation disabled (BFF_MCP_PROFILE_GENERATION_ENABLED=0)")
+
+        tools_summary: list[dict[str, Any]] = []
+        for tool in (record.discoveredTools or [])[:60]:
+            input_schema = getattr(tool, "inputSchema", {}) or {}
+            input_keys: list[str] = []
+            if isinstance(input_schema, dict):
+                props = input_schema.get("properties")
+                if isinstance(props, dict):
+                    input_keys = [str(k) for k in list(props.keys())[:30]]
+            tools_summary.append(
+                {
+                    "name": tool.name,
+                    "description": tool.description or "",
+                    "input_keys": input_keys,
+                }
+            )
+
+        payload = {
+            "version": "mcp-capability-profile.v1",
+            "server": {
+                "server_id": record.serverId,
+                "name": record.name,
+                "description": record.description or "",
+                "category": getattr(record, "category", "domain") or "domain",
+                "discovered_tools": tools_summary,
+            },
+            "output_contract": {
+                "version": "string, must be mcp-capability-profile.v1",
+                "language": "string, one of zh|en|mixed",
+                "domains": "array of strings, short domain tags",
+                "keywords": {"zh": "array of strings", "en": "array of strings"},
+                "example_queries": "array of natural user queries",
+                "negative_queries": "array of queries that should NOT route here",
+                "notes": "string, short guidance for routing",
+            },
+            "rules": [
+                "Return JSON object only. No markdown, no prose, no code fences.",
+                "Prefer user words in keywords and example_queries.",
+                "Keep example_queries realistic (<= 16 items).",
+                "Include common nicknames/synonyms in keywords when applicable.",
+                "Do not include secrets, tokens, urls, or commands.",
+            ],
+        }
+
+        system_prompt = "You generate strict JSON capability profiles for MCP servers. Output JSON only."
+        llm = self._get_profile_llm()
+        try:
+            response = await llm.ask(
+                messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+                system_msgs=[{"role": "system", "content": system_prompt}],
+                stream=False,
+                temperature=0,
+            )
+        except Exception as exc:
+            logger.warning(f"capabilityProfile LLM call failed for server {server_id}: {exc}")
+            raise ValueError(f"capabilityProfile generation failed: {exc}") from exc
+
+        parsed = self._extract_json_object(response)
+        if parsed is None:
+            raise ValueError("capabilityProfile generation returned invalid JSON object")
+
+        parsed.setdefault("version", "mcp-capability-profile.v1")
+        record.capabilityProfile = parsed
+        self._persist_state()
+        return record.model_dump()
+
+    async def backfill_mcp_server_capability_profiles(
+        self,
+        *,
+        force: bool = False,
+        limit: int = 50,
+    ) -> list[dict]:
+        updated: list[dict] = []
+        for server_id in sorted(self._store.mcp_servers.keys()):
+            record = self._store.mcp_servers.get(server_id)
+            if not record or not getattr(record, "enabled", True):
+                continue
+            existing = getattr(record, "capabilityProfile", None)
+            if isinstance(existing, dict) and existing and not force:
+                continue
+            result = await self.generate_mcp_server_capability_profile(server_id, force=force)
+            if result is not None:
+                updated.append(result)
+            if len(updated) >= max(1, int(limit)):
+                break
+        return updated
 
     def delete_mcp_server(self, server_id: str) -> list[dict]:
         self._store.mcp_servers.pop(server_id, None)

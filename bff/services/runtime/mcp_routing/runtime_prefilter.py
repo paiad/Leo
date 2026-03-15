@@ -18,13 +18,7 @@ class RuntimeMcpPrefilter:
 
     _MIXED_INTENTS = ["web_search", "browser_automation"]
 
-    # Keyword-based routing for domain-specific MCP servers.
-    # This keeps "general" intent defaulting to no-MCP while allowing explicit
-    # product/service asks (e.g. McDonald's) to hit the right server.
-    _DOMAIN_KEYWORD_ROUTES: dict[str, set[str]] = {
-        # Common nicknames/variants for McDonald's in CN + English.
-        "mcd-mcp": {"麦当劳", "麦当当", "mcdonald", "mcdonalds", "mcd"},
-    }
+    _GENERAL_INTENT_EXCLUDED_CATEGORIES: set[str] = {"infra"}
 
     def __init__(self, *, router: RuntimeMcpRouter, store: Any | None = None):
         self._router = router
@@ -63,17 +57,30 @@ class RuntimeMcpPrefilter:
         if mixed_news_and_browser and "exa" in enabled_server_ids and "exa" not in candidates:
             candidates.append("exa")
 
-        # Keyword-based routes for domain servers even when intent is "general".
-        for server_id, keywords in self._DOMAIN_KEYWORD_ROUTES.items():
-            if server_id not in enabled_server_ids or server_id in candidates:
-                continue
-            if any(keyword in prompt_text for keyword in keywords):
-                candidates.insert(0, server_id)
-
         # Honor explicit server mentions in the user request.
         for server_id in enabled_server_ids:
             if server_id in prompt_text and server_id not in candidates:
                 candidates.insert(0, server_id)
+
+        # For "general" asks, try selecting domain-specific MCP servers based on
+        # overlap with the server's declared metadata (name/description/tools),
+        # rather than hard-coded keyword routing maps.
+        if intent == "general" and not candidates and self._store:
+            servers = getattr(self._store, "mcp_servers", {}) or {}
+            scored: list[tuple[str, int]] = []
+            for server_id in enabled_server_ids:
+                server = servers.get(server_id)
+                if not server:
+                    continue
+                category = str(getattr(server, "category", "") or "").strip().lower()
+                if category in self._GENERAL_INTENT_EXCLUDED_CATEGORIES:
+                    continue
+                hits = self._router.keyword_overlap_count(prompt_text, server)
+                if hits > 0:
+                    scored.append((server_id, hits))
+            scored.sort(key=lambda item: (-item[1], item[0]))
+            for server_id, _hits in scored[:2]:
+                candidates.append(server_id)
 
         # General/tooling queries default to no-MCP unless explicitly named.
         need_mcp = bool(candidates)

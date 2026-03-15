@@ -57,9 +57,13 @@ def test_prefilter_weather_query_prefers_exa_over_trendradar():
     assert result.candidate_servers[0] == "exa"
 
 
-def test_prefilter_general_food_keyword_routes_to_mcd_mcp():
+def test_prefilter_general_food_routes_to_mcd_mcp_via_server_metadata():
     store = InMemoryStore(enable_persistence=False)
-    store.mcp_servers["mcd-mcp"] = _server("mcd-mcp")
+    server = _server("mcd-mcp")
+    server.name = "麦当劳优惠查询"
+    server.description = "麦当当 麦当劳 McDonald's 性价比 推荐"
+    server.category = "domain"
+    store.mcp_servers["mcd-mcp"] = server
 
     router = RuntimeMcpRouter(store=store)
     prefilter = RuntimeMcpPrefilter(router=router, store=store)
@@ -68,3 +72,27 @@ def test_prefilter_general_food_keyword_routes_to_mcd_mcp():
 
     assert result.need_mcp is True
     assert result.candidate_servers[0] == "mcd-mcp"
+
+
+def test_prefilter_general_metadata_skips_infra_category_servers():
+    store = InMemoryStore(enable_persistence=False)
+
+    infra = _server("infra-mcp")
+    infra.name = "麦当劳优惠查询"
+    infra.description = "麦当当 麦当劳 McDonald's"
+    infra.category = "infra"
+    store.mcp_servers["infra-mcp"] = infra
+
+    domain = _server("domain-mcp")
+    domain.name = "麦当劳优惠查询"
+    domain.description = "麦当当 麦当劳 McDonald's"
+    domain.category = "domain"
+    store.mcp_servers["domain-mcp"] = domain
+
+    router = RuntimeMcpRouter(store=store)
+    prefilter = RuntimeMcpPrefilter(router=router, store=store)
+
+    result = prefilter.build("[Current User Request]\n我想吃麦当当了！")
+
+    assert result.need_mcp is True
+    assert result.candidate_servers[0] == "domain-mcp"

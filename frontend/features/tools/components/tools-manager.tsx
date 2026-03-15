@@ -3,6 +3,7 @@
 import { RefreshCcw, ToggleLeft, ToggleRight, Trash2, Wrench } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
+  backfillMcpServerProfiles,
   createMcpServer,
   deleteMcpServer,
   fetchMcpRoutingDashboard,
@@ -48,6 +49,8 @@ type RawMcpServerConfig = {
   headers?: unknown;
   url?: string;
   description?: string;
+  category?: unknown;
+  capabilityProfile?: unknown;
   enabled?: boolean;
 };
 
@@ -85,6 +88,30 @@ function normalizeStringMap(value: unknown): Record<string, string> | undefined 
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
+function normalizeCapabilityProfile(value: unknown): Record<string, unknown> | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          return parsed as Record<string, unknown>;
+        }
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return undefined;
+}
+
 function normalizeServerConfig(
   fallbackServerId: string,
   raw: RawMcpServerConfig,
@@ -102,6 +129,8 @@ function normalizeServerConfig(
   const parsedEnv = normalizeStringMap(raw.env);
   const parsedHeaders = normalizeStringMap(raw.headers);
   const env = parsedEnv || parsedHeaders ? { ...(parsedHeaders ?? {}), ...(parsedEnv ?? {}) } : undefined;
+  const category = typeof raw.category === "string" && raw.category.trim() ? raw.category.trim() : undefined;
+  const capabilityProfile = normalizeCapabilityProfile(raw.capabilityProfile);
 
   return {
     serverId,
@@ -115,6 +144,8 @@ function normalizeServerConfig(
       typeof raw.description === "string" && raw.description.trim()
         ? raw.description.trim()
         : "",
+    category,
+    capabilityProfile,
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : true,
   };
 }
@@ -152,6 +183,9 @@ export function McpManager() {
   const [importError, setImportError] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
+  const [profileNotice, setProfileNotice] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [isBackfillingProfiles, setIsBackfillingProfiles] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isRoutingLoading, setIsRoutingLoading] = useState(false);
@@ -250,6 +284,8 @@ export function McpManager() {
     setListError(null);
     setRoutingError(null);
     setRoutingNotice(null);
+    setProfileError(null);
+    setProfileNotice(null);
     setIsRefreshing(true);
     try {
       await Promise.all([loadServers(), loadRoutingObservability()]);
@@ -259,6 +295,30 @@ export function McpManager() {
       setRoutingError(message);
     } finally {
       setIsRefreshing(false);
+    }
+  };
+
+  const handleBackfillProfiles = async () => {
+    if (isBackfillingProfiles) {
+      return;
+    }
+    setProfileError(null);
+    setProfileNotice(null);
+
+    const confirmed = window.confirm("将为缺失 capabilityProfile 的 MCP Server 生成 Profile（会调用 LLM）。确认继续？");
+    if (!confirmed) {
+      return;
+    }
+
+    setIsBackfillingProfiles(true);
+    try {
+      const updated = await backfillMcpServerProfiles({ limit: 50, force: false });
+      await loadServers();
+      setProfileNotice(`Profile 补齐完成：本次更新 ${updated.length} 个 Server`);
+    } catch (error) {
+      setProfileError(error instanceof Error ? error.message : "补齐 MCP Profile 失败");
+    } finally {
+      setIsBackfillingProfiles(false);
     }
   };
 
@@ -392,18 +452,31 @@ export function McpManager() {
       <section className="rounded-2xl border border-slate-200/80 bg-white p-5">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold tracking-wide text-slate-800">已添加 MCP ({servers.length})</h2>
-          <button
-            type="button"
-            onClick={() => void handleRefresh()}
-            disabled={isRefreshing}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200/90 text-slate-700 disabled:opacity-60"
-            aria-label="刷新 MCP 列表"
-            title="刷新 MCP 列表"
-          >
-            <RefreshCcw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleBackfillProfiles()}
+              disabled={isBackfillingProfiles || isRefreshing}
+              className="rounded-lg border border-slate-200/90 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 disabled:opacity-60"
+              title="为缺失 capabilityProfile 的 MCP Server 生成 Profile（调用 LLM）"
+            >
+              {isBackfillingProfiles ? "补齐中..." : "补齐 Profile"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleRefresh()}
+              disabled={isRefreshing}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200/90 text-slate-700 disabled:opacity-60"
+              aria-label="刷新 MCP 列表"
+              title="刷新 MCP 列表"
+            >
+              <RefreshCcw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
+            </button>
+          </div>
         </div>
         {listError ? <p className="mt-2 text-xs text-red-600">{listError}</p> : null}
+        {profileError ? <p className="mt-2 text-xs text-red-600">{profileError}</p> : null}
+        {profileNotice ? <p className="mt-2 text-xs text-emerald-700">{profileNotice}</p> : null}
         <ul className="mt-3 space-y-3">
           {servers.map((server) => (
             <li key={server.serverId} className="rounded-2xl border border-slate-200/80 bg-slate-50/60 p-3.5">
@@ -421,6 +494,20 @@ export function McpManager() {
                       }`}
                     >
                       {server.enabled ? "已启用" : "已禁用"}
+                    </span>
+                    <span className="ml-2 rounded bg-slate-200 px-2 py-0.5 text-slate-700">
+                      category: {(server.category ?? "domain") as string}
+                    </span>
+                    <span
+                      className={`ml-2 rounded px-2 py-0.5 ${
+                        server.capabilityProfile && Object.keys(server.capabilityProfile).length > 0
+                          ? "bg-indigo-100 text-indigo-700"
+                          : "bg-amber-100 text-amber-700"
+                      }`}
+                    >
+                      {server.capabilityProfile && Object.keys(server.capabilityProfile).length > 0
+                        ? "profile 已生成"
+                        : "profile 缺失"}
                     </span>
                   </p>
                   <p className="mt-1 text-xs text-slate-600">
@@ -446,6 +533,33 @@ export function McpManager() {
                   {!server.description && getPurposeText(server) ? (
                     <p className="mt-2 text-xs text-slate-600">作用：{getPurposeText(server)}</p>
                   ) : null}
+
+                  <details className="mt-3 rounded-xl border border-slate-200/80 bg-white">
+                    <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-slate-700">
+                      Profile（点击展开）
+                    </summary>
+                    <div className="border-t border-slate-200/80 px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[11px] text-slate-500">
+                          capabilityProfile（用于 general intent 的元数据匹配）
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const pretty = JSON.stringify(server.capabilityProfile ?? {}, null, 2);
+                            void navigator.clipboard?.writeText(pretty);
+                            setProfileNotice(`已复制 ${server.serverId} 的 Profile`);
+                          }}
+                          className="rounded-lg border border-slate-200/80 bg-white px-2 py-1 text-[11px] font-medium text-slate-700"
+                        >
+                          复制 JSON
+                        </button>
+                      </div>
+                      <pre className="mt-2 max-h-72 overflow-auto rounded-lg bg-slate-50 p-2 text-[11px] text-slate-700">
+                        {JSON.stringify(server.capabilityProfile ?? {}, null, 2)}
+                      </pre>
+                    </div>
+                  </details>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <button

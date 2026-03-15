@@ -68,6 +68,8 @@ class McpServerRecord(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     url: str | None = None
     description: str = ""
+    category: str = "domain"
+    capabilityProfile: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
     discoveredTools: list[McpDiscoveredTool] = Field(default_factory=list)
 
@@ -81,6 +83,8 @@ class McpServerCreate(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     url: str | None = None
     description: str | None = ""
+    category: str | None = None
+    capabilityProfile: dict[str, Any] | None = None
     enabled: bool | None = True
 
 
@@ -92,6 +96,8 @@ class McpServerUpdate(BaseModel):
     env: dict[str, str] | None = None
     url: str | None = None
     description: str | None = None
+    category: str | None = None
+    capabilityProfile: dict[str, Any] | None = None
     enabled: bool | None = None
 
 

@@ -133,6 +133,8 @@ export type CreateMcpServerInput = {
   env?: Record<string, string>;
   url?: string;
   description?: string;
+  category?: string;
+  capabilityProfile?: Record<string, unknown>;
   enabled?: boolean;
 };
 
@@ -144,6 +146,8 @@ export type UpdateMcpServerInput = {
   env?: Record<string, string>;
   url?: string;
   description?: string;
+  category?: string;
+  capabilityProfile?: Record<string, unknown>;
   enabled?: boolean;
 };
 
@@ -813,6 +817,34 @@ export async function discoverMcpServerTools(serverId: string): Promise<ChatMcpD
   if (!payload.success) {
     throw new Error(payload.error ?? "MCP discover 返回异常");
   }
+  return payload.data;
+}
+
+export async function backfillMcpServerProfiles(
+  options: { force?: boolean; limit?: number } = {},
+): Promise<ChatMcpServer[]> {
+  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE_URL;
+  const force = options.force ? "true" : "false";
+  const limit = typeof options.limit === "number" ? String(options.limit) : "50";
+  const response = await fetch(
+    `${baseUrl}/api/v1/mcp/servers/profile/backfill?force=${force}&limit=${encodeURIComponent(limit)}`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+      },
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(`补齐 MCP Profile 失败：HTTP ${response.status}`);
+  }
+
+  const payload = (await response.json()) as McpServerListApiResponse;
+  if (!payload.success) {
+    throw new Error(payload.error ?? "补齐 MCP Profile 返回异常");
+  }
+
   return payload.data;
 }
 

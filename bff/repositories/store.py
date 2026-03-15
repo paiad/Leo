@@ -226,10 +226,26 @@ class PostgresStore:
                         env_json TEXT NOT NULL DEFAULT '{}',
                         url TEXT,
                         description TEXT NOT NULL DEFAULT '',
+                        category TEXT NOT NULL DEFAULT 'domain',
+                        capability_profile_json TEXT NOT NULL DEFAULT '{}',
                         enabled BOOLEAN NOT NULL DEFAULT TRUE,
                         discovered_tools_json TEXT NOT NULL DEFAULT '[]',
                         updated_at TEXT NOT NULL
                     )
+                    """
+                )
+                cur.execute(
+                    "ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'domain'"
+                )
+                cur.execute(
+                    "ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS capability_profile_json TEXT NOT NULL DEFAULT '{}'"
+                )
+                cur.execute(
+                    """
+                    UPDATE mcp_servers
+                    SET category = 'infra'
+                    WHERE server_id IN ('playwright', 'github', 'rag', 'trendradar', 'exa')
+                      AND category = 'domain'
                     """
                 )
                 cur.execute(
@@ -371,6 +387,8 @@ class PostgresStore:
                         env_json,
                         url,
                         description,
+                        category,
+                        capability_profile_json,
                         enabled,
                         discovered_tools_json
                     FROM mcp_servers
@@ -384,6 +402,7 @@ class PostgresStore:
             try:
                 args = json.loads(str(row["args_json"] or "[]"))
                 env = json.loads(str(row["env_json"] or "{}"))
+                capability_profile = json.loads(str(row.get("capability_profile_json") or "{}"))
                 discovered_raw = json.loads(str(row["discovered_tools_json"] or "[]"))
                 discovered: list[McpDiscoveredTool] = []
                 if isinstance(discovered_raw, list):
@@ -407,6 +426,8 @@ class PostgresStore:
                     env=env if isinstance(env, dict) else {},
                     url=row["url"],
                     description=str(row["description"] or ""),
+                    category=str(row.get("category") or "domain"),
+                    capabilityProfile=(capability_profile if isinstance(capability_profile, dict) else {}),
                     enabled=bool(row["enabled"]),
                     discoveredTools=discovered,
                 )
@@ -646,11 +667,13 @@ class PostgresStore:
                                 env_json,
                                 url,
                                 description,
+                                category,
+                                capability_profile_json,
                                 enabled,
                                 discovered_tools_json,
                                 updated_at
                             )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             ON CONFLICT (server_id) DO UPDATE
                             SET
                                 name = EXCLUDED.name,
@@ -660,6 +683,8 @@ class PostgresStore:
                                 env_json = EXCLUDED.env_json,
                                 url = EXCLUDED.url,
                                 description = EXCLUDED.description,
+                                category = EXCLUDED.category,
+                                capability_profile_json = EXCLUDED.capability_profile_json,
                                 enabled = EXCLUDED.enabled,
                                 discovered_tools_json = EXCLUDED.discovered_tools_json,
                                 updated_at = EXCLUDED.updated_at
@@ -673,6 +698,8 @@ class PostgresStore:
                                 json.dumps(server.env or {}, ensure_ascii=False),
                                 server.url,
                                 server.description or "",
+                                str(getattr(server, "category", "") or "domain"),
+                                json.dumps(getattr(server, "capabilityProfile", {}) or {}, ensure_ascii=False),
                                 bool(server.enabled),
                                 json.dumps(
                                     [tool.model_dump() for tool in (server.discoveredTools or [])],

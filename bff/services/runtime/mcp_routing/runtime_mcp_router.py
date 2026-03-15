@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 from typing import Any, Literal
@@ -364,6 +365,16 @@ class RuntimeMcpRouter:
         prompt_text = self.normalized_current_user_request(prompt)
         return self._classify_intent(prompt_text)
 
+    def keyword_overlap_count(self, prompt_text: str, server: Any) -> int:
+        """
+        Public wrapper for overlap scoring between a prompt and an MCP server's
+        declared metadata (id/name/description/discovered tools).
+
+        Used by the prefilter to select domain-specific MCP servers for
+        otherwise "general" requests without hard-coded keyword maps.
+        """
+        return self._keyword_overlap_count(self._normalize_text(prompt_text), server)
+
     def _server_explicitly_mentioned(self, prompt_text: str, server: Any) -> bool:
         sid = self._normalize_text(getattr(server, "serverId", ""))
         name = self._normalize_text(getattr(server, "name", ""))
@@ -450,10 +461,19 @@ class RuntimeMcpRouter:
 
     def _build_server_metadata_parts(self, server: Any) -> list[str]:
         server_id = getattr(server, "serverId", "")
+        capability_profile = getattr(server, "capabilityProfile", {}) or {}
+        profile_text = ""
+        if isinstance(capability_profile, dict):
+            try:
+                profile_text = json.dumps(capability_profile, ensure_ascii=False)
+            except Exception:
+                profile_text = ""
         metadata_parts: list[str] = [
             self._normalize_text(server_id),
             self._normalize_text(getattr(server, "name", "")),
             self._normalize_text(getattr(server, "description", "")),
+            self._normalize_text(getattr(server, "category", "")),
+            self._normalize_text(profile_text),
         ]
         discovered_tools = getattr(server, "discoveredTools", []) or []
         for tool in discovered_tools:
@@ -468,8 +488,18 @@ class RuntimeMcpRouter:
         alias_set = self._server_aliases(server_id)
 
         phrase_hits = sum(1 for alias in alias_set if alias and alias in prompt_text)
+
+        # Phrase overlap:
+        # - ASCII relies on word-token overlap below.
+        # - CJK needs substring matching; split metadata into meaningful chunks
+        #   (e.g. "麦当当") instead of requiring the whole description to appear.
+        metadata_phrases = {
+            p
+            for p in re.findall(r"[\u4e00-\u9fff]{2,}|[a-z0-9_-]{2,}", metadata_text)
+            if p
+        }
         phrase_hits += sum(
-            1 for part in metadata_parts if part and len(part) >= 3 and part in prompt_text
+            1 for phrase in metadata_phrases if len(phrase) >= 3 and phrase in prompt_text
         )
 
         prompt_tokens = self._tokenize_words(prompt_text) - self._MCP_ROUTING_STOPWORDS

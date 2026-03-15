@@ -52,3 +52,23 @@ async def list_mcp_server_tools(server_id: str) -> dict:
     if result is None:
         raise HTTPException(status_code=404, detail=err('MCP Server 不存在'))
     return ok(result)
+
+
+@router.post('/{server_id}/profile/generate')
+async def generate_mcp_server_profile(server_id: str, force: bool = False) -> dict:
+    try:
+        result = await tooling_service.generate_mcp_server_capability_profile(server_id, force=force)
+        if result is None:
+            raise HTTPException(status_code=404, detail=err('MCP Server 不存在'))
+        return ok(result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=err(str(exc))) from exc
+
+
+@router.post('/profile/backfill')
+async def backfill_mcp_server_profiles(force: bool = False, limit: int = 50) -> dict:
+    try:
+        result = await tooling_service.backfill_mcp_server_capability_profiles(force=force, limit=limit)
+        return ok(result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=err(str(exc))) from exc
