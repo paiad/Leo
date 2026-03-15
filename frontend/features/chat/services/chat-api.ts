@@ -890,3 +890,29 @@ export async function fetchMcpRoutingEvents(
   }
   return payload.data ?? [];
 }
+
+export async function purgeLegacyMcpRoutingEvents(): Promise<number> {
+  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE_URL;
+  const response = await fetch(`${baseUrl}/api/v1/runtime/mcp-routing/legacy`, {
+    method: "DELETE",
+    headers: {
+      Accept: "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`清空 legacy 路由事件失败：HTTP ${response.status}`);
+  }
+
+  const payload = (await response.json()) as {
+    success: boolean;
+    data: { deletedCount?: number } | null;
+    error: string | null;
+  };
+
+  if (!payload.success) {
+    throw new Error(payload.error ?? "清空 legacy 路由事件失败");
+  }
+
+  return payload.data?.deletedCount ?? 0;
+}
