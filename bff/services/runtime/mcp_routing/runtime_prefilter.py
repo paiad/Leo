@@ -18,6 +18,14 @@ class RuntimeMcpPrefilter:
 
     _MIXED_INTENTS = ["web_search", "browser_automation"]
 
+    # Keyword-based routing for domain-specific MCP servers.
+    # This keeps "general" intent defaulting to no-MCP while allowing explicit
+    # product/service asks (e.g. McDonald's) to hit the right server.
+    _DOMAIN_KEYWORD_ROUTES: dict[str, set[str]] = {
+        # Common nicknames/variants for McDonald's in CN + English.
+        "mcd-mcp": {"麦当劳", "麦当当", "mcdonald", "mcdonalds", "mcd"},
+    }
+
     def __init__(self, *, router: RuntimeMcpRouter, store: Any | None = None):
         self._router = router
         self._store = store
@@ -31,6 +39,7 @@ class RuntimeMcpPrefilter:
             else [intent]
         )
         mixed_news_and_browser = len(plan_intents) > 1
+        prefer_trendradar = self._router.should_force_trendradar_for_prompt(prompt)
 
         enabled_server_ids = self._enabled_server_ids()
         candidates: list[str] = []
@@ -40,12 +49,26 @@ class RuntimeMcpPrefilter:
             if mixed_news_and_browser and item_intent == "web_search":
                 # For mixed intent, keep TrendRadar first and defer Exa as fallback.
                 ordered_servers = [sid for sid in ordered_servers if sid == "trendradar"]
+            elif item_intent == "web_search" and not prefer_trendradar:
+                # Prefer Exa for non-news web search requests (e.g. weather, general lookup).
+                # TrendRadar remains available as fallback.
+                ordered_servers = sorted(
+                    ordered_servers,
+                    key=lambda sid: 0 if sid == "exa" else 1,
+                )
             for server_id in ordered_servers:
                 if server_id in enabled_server_ids and server_id not in candidates:
                     candidates.append(server_id)
 
         if mixed_news_and_browser and "exa" in enabled_server_ids and "exa" not in candidates:
             candidates.append("exa")
+
+        # Keyword-based routes for domain servers even when intent is "general".
+        for server_id, keywords in self._DOMAIN_KEYWORD_ROUTES.items():
+            if server_id not in enabled_server_ids or server_id in candidates:
+                continue
+            if any(keyword in prompt_text for keyword in keywords):
+                candidates.insert(0, server_id)
 
         # Honor explicit server mentions in the user request.
         for server_id in enabled_server_ids:

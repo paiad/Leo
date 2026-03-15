@@ -41,3 +41,30 @@ def test_prefilter_tooling_meta_query_defaults_to_no_mcp():
     assert result.need_mcp is False
     assert result.candidate_servers == []
     assert result.rule_fallback.mode == "no_mcp"
+
+
+def test_prefilter_weather_query_prefers_exa_over_trendradar():
+    store = InMemoryStore(enable_persistence=False)
+    store.mcp_servers["trendradar"] = _server("trendradar")
+    store.mcp_servers["exa"] = _server("exa")
+
+    router = RuntimeMcpRouter(store=store)
+    prefilter = RuntimeMcpPrefilter(router=router, store=store)
+
+    result = prefilter.build("[Current User Request]\n今天开封天气怎么样？")
+
+    assert result.need_mcp is True
+    assert result.candidate_servers[0] == "exa"
+
+
+def test_prefilter_general_food_keyword_routes_to_mcd_mcp():
+    store = InMemoryStore(enable_persistence=False)
+    store.mcp_servers["mcd-mcp"] = _server("mcd-mcp")
+
+    router = RuntimeMcpRouter(store=store)
+    prefilter = RuntimeMcpPrefilter(router=router, store=store)
+
+    result = prefilter.build("[Current User Request]\n我想吃麦当当了！有性价比高的推荐么？")
+
+    assert result.need_mcp is True
+    assert result.candidate_servers[0] == "mcd-mcp"
