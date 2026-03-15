@@ -134,7 +134,7 @@ class RuntimeMcpPlanningOrchestrator:
             fallback=fallback,
         )
 
-    async def decide(self, prompt: str) -> PlanningDecision:
+    async def decide(self, prompt: str, *, session_id: str | None = None) -> PlanningDecision:
         planner_enabled = self._is_truthy_env(os.getenv("BFF_RUNTIME_PLANNER_ENABLED", "1"))
         strict_json = self._is_truthy_env(os.getenv("BFF_RUNTIME_STRICT_JSON_VALIDATION", "1"))
         shadow_only = self._is_truthy_env(os.getenv("BFF_RUNTIME_PLANNER_SHADOW_ONLY", "0"))
@@ -158,6 +158,7 @@ class RuntimeMcpPlanningOrchestrator:
         self._record(
             {
                 "event_type": "prefilter",
+                "session_id": session_id,
                 "prompt_hash": prompt_hash,
                 "intent": prefilter.intent,
                 "selected_server_id": prefilter.rule_fallback.server_id,
@@ -229,6 +230,7 @@ class RuntimeMcpPlanningOrchestrator:
         self._record(
             {
                 "event_type": "planner",
+                "session_id": session_id,
                 "prompt_hash": prompt_hash,
                 "intent": prefilter.intent,
                 "selected_server_id": None,
@@ -246,6 +248,7 @@ class RuntimeMcpPlanningOrchestrator:
             self._record(
                 {
                     "event_type": "gatekeeper",
+                    "session_id": session_id,
                     "prompt_hash": prompt_hash,
                     "intent": prefilter.intent,
                     "selected_server_id": prefilter.rule_fallback.server_id,
@@ -298,6 +301,7 @@ class RuntimeMcpPlanningOrchestrator:
         self._record(
             {
                 "event_type": "gatekeeper",
+                "session_id": session_id,
                 "prompt_hash": prompt_hash,
                 "intent": prefilter.intent,
                 "selected_server_id": (

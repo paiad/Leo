@@ -468,6 +468,16 @@ class ChatService:
             session.updatedAt = now_iso()
             self._store.persist_sessions()
 
+            deleter = getattr(self._store, "delete_mcp_routing_events_by_session", None)
+            if callable(deleter):
+                try:
+                    deleter(session_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to delete MCP routing events for session clear: "
+                        f"session_id={session_id}, error={exc}"
+                    )
+
         try:
             self._context_memory.purge_session_memory(session_id=session_id)
         except Exception as exc:
@@ -512,26 +522,18 @@ class ChatService:
             request_message_id=user_message_id,
         )
         response_text = await self._runtime.ask(
-            runtime_prompt
+            runtime_prompt,
+            session_id=session.id,
         )
         response_text = self._to_simplified_chinese(response_text)
         assistant = await self._append_assistant_message(session.id, response_text, payload.model)
-        if payload.source == "lark":
-            self._schedule_post_turn_persist(
-                source=payload.source,
-                session_id=session.id,
-                user_text=user_text,
-                response_text=response_text,
-                model=payload.model,
-            )
-        else:
-            await self._persist_post_turn(
-                source=payload.source,
-                session_id=session.id,
-                user_text=user_text,
-                response_text=response_text,
-                model=payload.model,
-            )
+        self._schedule_post_turn_persist(
+            source=payload.source,
+            session_id=session.id,
+            user_text=user_text,
+            response_text=response_text,
+            model=payload.model,
+        )
 
         return {
             "success": True,
@@ -592,23 +594,11 @@ class ChatService:
                 response_text,
                 payload.model,
             )
-            await self._context_memory.persist_turn_memory(
-                session_id=session.id,
-                user_message=user_text,
-                assistant_message=response_text,
-            )
-            await self._append_chat_record(
+            self._schedule_post_turn_persist(
                 source=payload.source,
                 session_id=session.id,
-                question=user_text,
-                answer=response_text,
-                model=payload.model,
-            )
-            self._schedule_memory_sync(
-                source=payload.source,
-                session_id=session.id,
-                question=user_text,
-                answer=response_text,
+                user_text=user_text,
+                response_text=response_text,
                 model=payload.model,
             )
             has_persisted_response = True
@@ -632,6 +622,7 @@ class ChatService:
                         source=payload.source,
                         request_message_id=user_message_id,
                     ),
+                    session_id=session.id,
                     progress_callback=on_runtime_event,
                 )
             )

@@ -6,7 +6,7 @@ from bff.services.runtime.mcp_routing.runtime_mcp_router import RuntimeMcpRouter
 
 
 class _FakeRuntime:
-    async def ask(self, prompt: str, progress_callback=None) -> str:
+    async def ask(self, prompt: str, *, session_id: str | None = None, progress_callback=None) -> str:
         return prompt
 
 

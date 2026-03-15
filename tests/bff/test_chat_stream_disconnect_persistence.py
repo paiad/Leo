@@ -8,7 +8,7 @@ from bff.services.chat.chat_service import ChatService
 
 
 class _FakeRuntime:
-    async def ask(self, prompt: str, progress_callback=None) -> str:
+    async def ask(self, prompt: str, *, session_id: str | None = None, progress_callback=None) -> str:
         await asyncio.sleep(0.1)
         return f"assistant:{prompt}"
 

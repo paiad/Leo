@@ -80,6 +80,7 @@ export type ChatRuntimeConfig = {
 
 export type ChatRoutingEvent = {
   id?: string;
+  session_id?: string | null;
   event_type: string;
   request_preview?: string;
   prompt_hash?: string;

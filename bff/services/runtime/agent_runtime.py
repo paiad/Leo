@@ -27,6 +27,7 @@ class AgentRuntime(Protocol):
         self,
         prompt: str,
         *,
+        session_id: str | None = None,
         max_steps: int | None = None,
         progress_callback: Callable[[dict[str, Any]], Any] | None = None,
     ) -> str: ...
@@ -199,6 +200,7 @@ class ManusRuntime:
         self,
         prompt: str,
         *,
+        session_id: str | None = None,
         max_steps: int | None = None,
         progress_callback: Callable[[dict[str, Any]], Any] | None = None,
     ) -> str:
@@ -257,6 +259,7 @@ class ManusRuntime:
             execution = await self._executor.execute_turn(
                 agent=agent,
                 prompt=prompt,
+                session_id=session_id,
                 steps=steps,
                 time_budget_seconds=time_budget_seconds,
                 reuse_agent=reuse_agent,

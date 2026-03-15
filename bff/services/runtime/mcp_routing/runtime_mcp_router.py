@@ -94,10 +94,21 @@ class RuntimeMcpRouter:
         "find",
         "look up",
         "news",
+        "weather",
+        "forecast",
+        "temperature",
+        "temp",
         "查一下",
         "搜索",
         "检索",
         "资讯",
+        "天气",
+        "气温",
+        "温度",
+        "预报",
+        "降雨",
+        "空气质量",
+        "aqi",
     }
     _TRENDRADAR_NEWS_HINTS = {
         "news",
@@ -707,6 +718,7 @@ class RuntimeMcpRouter:
         self,
         *,
         prompt: str,
+        session_id: str | None = None,
         connected_server_ids: list[str] | None,
         messages: list[Any],
         latency_ms: int | None,
@@ -726,6 +738,7 @@ class RuntimeMcpRouter:
         self._record_routing_event(
             {
                 "event_type": "outcome",
+                "session_id": session_id,
                 "prompt_hash": self._hash_prompt(prompt_text),
                 "intent": intent,
                 "selected_server_id": connected[0] if connected else None,
@@ -820,7 +833,13 @@ class RuntimeMcpRouter:
             return prompt
         return f"{prompt}\n\n{catalog}"
 
-    async def connect_enabled_mcp_servers(self, agent: Manus, prompt: str) -> list[str]:
+    async def connect_enabled_mcp_servers(
+        self,
+        agent: Manus,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+    ) -> list[str]:
         if not self._store:
             return []
         request_text = self.current_user_request(prompt)
@@ -880,6 +899,7 @@ class RuntimeMcpRouter:
         self._record_routing_event(
             {
                 "event_type": "decision",
+                "session_id": session_id,
                 "prompt_hash": self._hash_prompt(prompt_text),
                 "intent": intent,
                 "selected_server_id": (

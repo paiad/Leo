@@ -117,6 +117,27 @@ class InMemoryStore:
         if len(self.mcp_routing_events) > 2000:
             self.mcp_routing_events = self.mcp_routing_events[-2000:]
 
+    def delete_mcp_routing_events_by_session(self, session_id: str) -> int:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return 0
+        before = len(self.mcp_routing_events)
+        self.mcp_routing_events = [
+            event
+            for event in self.mcp_routing_events
+            if str((event or {}).get("session_id") or "").strip() != normalized_session_id
+        ]
+        return before - len(self.mcp_routing_events)
+
+    def delete_legacy_mcp_routing_events(self) -> int:
+        before = len(self.mcp_routing_events)
+        self.mcp_routing_events = [
+            event
+            for event in self.mcp_routing_events
+            if str((event or {}).get("session_id") or "").strip()
+        ]
+        return before - len(self.mcp_routing_events)
+
     def list_mcp_routing_events(
         self,
         *,
@@ -236,6 +257,7 @@ class PostgresStore:
                     """
                     CREATE TABLE IF NOT EXISTS runtime_mcp_routing_events (
                         id TEXT PRIMARY KEY,
+                        session_id TEXT,
                         event_type TEXT NOT NULL DEFAULT 'decision',
                         prompt_hash TEXT NOT NULL,
                         intent TEXT NOT NULL,
@@ -250,8 +272,15 @@ class PostgresStore:
                     )
                     """
                 )
+                # Backward-compatible migration for existing tables.
+                cur.execute(
+                    "ALTER TABLE runtime_mcp_routing_events ADD COLUMN IF NOT EXISTS session_id TEXT"
+                )
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_runtime_mcp_routing_events_created ON runtime_mcp_routing_events(created_at)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_runtime_mcp_routing_events_session_created ON runtime_mcp_routing_events(session_id, created_at)"
                 )
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_runtime_mcp_routing_events_intent_server ON runtime_mcp_routing_events(intent, selected_server_id)"
@@ -458,7 +487,10 @@ class PostgresStore:
                     else:
                         cur.execute("DELETE FROM chat_messages")
                         cur.execute("DELETE FROM chat_sessions")
+                        conn.commit()
+                        return
 
+                    # Keep session metadata in sync via idempotent upsert.
                     for sid, session in self.sessions.items():
                         cur.execute(
                             """
@@ -479,15 +511,96 @@ class PostgresStore:
                             ),
                         )
 
-                        # Keep behavior deterministic with in-memory state.
-                        cur.execute("DELETE FROM chat_messages WHERE session_id = %s", (sid,))
-                        if session.messages:
+                    # Incremental message persistence:
+                    # 1) insert only newly seen message ids
+                    # 2) delete message ids removed from in-memory state
+                    current_sid_list = list(current_ids)
+                    cur.execute(
+                        """
+                        SELECT
+                            id,
+                            session_id,
+                            role,
+                            content,
+                            created_at,
+                            model,
+                            user_input_type,
+                            tool_events_json,
+                            decision_events_json
+                        FROM chat_messages
+                        WHERE session_id = ANY(%s)
+                        """,
+                        (current_sid_list,),
+                    )
+                    existing_rows = cur.fetchall()
+                    existing_ids_by_session: dict[str, set[str]] = {}
+                    existing_payload_by_session: dict[str, dict[str, tuple[object, ...]]] = {}
+                    for row in existing_rows:
+                        sid = str(row["session_id"])
+                        msg_id = str(row["id"])
+                        existing_ids_by_session.setdefault(sid, set()).add(msg_id)
+                        existing_payload_by_session.setdefault(sid, {})[msg_id] = (
+                            str(row["role"]),
+                            str(row["content"] or ""),
+                            str(row["created_at"]),
+                            row["model"],
+                            ("audio_asr" if str(row["user_input_type"] or "text") == "audio_asr" else "text"),
+                            str(row["tool_events_json"] or "[]"),
+                            str(row["decision_events_json"] or "[]"),
+                        )
+
+                    for sid, session in self.sessions.items():
+                        existing_ids = existing_ids_by_session.get(sid, set())
+                        current_message_ids = {msg.id for msg in session.messages}
+
+                        removed_ids = list(existing_ids - current_message_ids)
+                        if removed_ids:
+                            cur.execute(
+                                """
+                                DELETE FROM chat_messages
+                                WHERE session_id = %s AND id = ANY(%s)
+                                """,
+                                (sid, removed_ids),
+                            )
+
+                        existing_payload = existing_payload_by_session.get(sid, {})
+                        changed_messages: list[MessageRecord] = []
+                        for msg in session.messages:
+                            serialized_tool_events = json.dumps(
+                                msg.toolEvents or [], ensure_ascii=False
+                            )
+                            serialized_decision_events = json.dumps(
+                                msg.decisionEvents or [], ensure_ascii=False
+                            )
+                            current_payload = (
+                                msg.role,
+                                msg.content,
+                                msg.createdAt,
+                                msg.model,
+                                ("audio_asr" if msg.userInputType == "audio_asr" else "text"),
+                                serialized_tool_events,
+                                serialized_decision_events,
+                            )
+                            if existing_payload.get(msg.id) != current_payload:
+                                changed_messages.append(msg)
+
+                        if changed_messages:
                             cur.executemany(
                                 """
                                 INSERT INTO chat_messages (
                                     id, session_id, role, content, created_at, model, user_input_type, tool_events_json, decision_events_json
                                 )
                                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                ON CONFLICT (id) DO UPDATE
+                                SET
+                                    session_id = EXCLUDED.session_id,
+                                    role = EXCLUDED.role,
+                                    content = EXCLUDED.content,
+                                    created_at = EXCLUDED.created_at,
+                                    model = EXCLUDED.model,
+                                    user_input_type = EXCLUDED.user_input_type,
+                                    tool_events_json = EXCLUDED.tool_events_json,
+                                    decision_events_json = EXCLUDED.decision_events_json
                                 """,
                                 [
                                     (
@@ -501,7 +614,7 @@ class PostgresStore:
                                         json.dumps(msg.toolEvents or [], ensure_ascii=False),
                                         json.dumps(msg.decisionEvents or [], ensure_ascii=False),
                                     )
-                                    for msg in session.messages
+                                    for msg in changed_messages
                                 ],
                             )
                 conn.commit()
@@ -586,6 +699,7 @@ class PostgresStore:
         event = dict(payload or {})
         event_id = str(event.get("id") or new_id())
         event_type = str(event.get("event_type") or "decision")
+        session_id = event.get("session_id")
         prompt_hash = str(event.get("prompt_hash") or "")
         intent = str(event.get("intent") or "")
         if not prompt_hash or not intent:
@@ -612,6 +726,7 @@ class PostgresStore:
                     """
                     INSERT INTO runtime_mcp_routing_events (
                         id,
+                        session_id,
                         event_type,
                         prompt_hash,
                         intent,
@@ -624,10 +739,11 @@ class PostgresStore:
                         latency_ms,
                         created_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         event_id,
+                        (str(session_id).strip() if session_id is not None else None),
                         event_type,
                         prompt_hash,
                         intent,
@@ -642,6 +758,30 @@ class PostgresStore:
                     ),
                 )
             conn.commit()
+
+    def delete_mcp_routing_events_by_session(self, session_id: str) -> int:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return 0
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM runtime_mcp_routing_events WHERE session_id = %s",
+                    (normalized_session_id,),
+                )
+                deleted = int(getattr(cur, "rowcount", 0) or 0)
+            conn.commit()
+        return deleted
+
+    def delete_legacy_mcp_routing_events(self) -> int:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM runtime_mcp_routing_events WHERE session_id IS NULL OR session_id = ''"
+                )
+                deleted = int(getattr(cur, "rowcount", 0) or 0)
+            conn.commit()
+        return deleted
 
     def list_mcp_routing_events(
         self,
@@ -664,6 +804,7 @@ class PostgresStore:
         sql = f"""
             SELECT
                 id,
+                session_id,
                 event_type,
                 prompt_hash,
                 intent,
@@ -693,6 +834,7 @@ class PostgresStore:
                 events.append(
                     {
                         "id": str(row["id"]),
+                        "session_id": (str(row.get("session_id") or "") or None),
                         "event_type": str(row["event_type"] or ""),
                         "prompt_hash": str(row["prompt_hash"] or ""),
                         "intent": str(row["intent"] or ""),

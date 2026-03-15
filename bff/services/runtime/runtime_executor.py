@@ -44,11 +44,26 @@ class RuntimeExecutor:
         )
         agent.available_tools = ToolCollection(*filtered_tools)
 
+    @staticmethod
+    def strip_mcp_tools(agent: Manus) -> None:
+        """
+        Hard-disable any MCP tools for this turn.
+        This enforces routing decisions where need_mcp=false so the model cannot
+        accidentally call already-available `mcp_*` tools from a reused agent.
+        """
+        from app.tool.mcp import MCPClientTool
+
+        filtered_tools = tuple(
+            tool for tool in agent.available_tools.tools if not isinstance(tool, MCPClientTool)
+        )
+        agent.available_tools = ToolCollection(*filtered_tools)
+
     async def execute_turn(
         self,
         *,
         agent: Manus,
         prompt: str,
+        session_id: str | None = None,
         steps: int,
         time_budget_seconds: int,
         reuse_agent: bool,
@@ -71,6 +86,7 @@ class RuntimeExecutor:
         execution = await self._run_main_round(
             agent=agent,
             prompt=prompt,
+            session_id=session_id,
             time_budget_seconds=time_budget_seconds,
             reuse_agent=reuse_agent,
             shared_agent_lock=shared_agent_lock,
@@ -95,6 +111,7 @@ class RuntimeExecutor:
         elapsed_ms = int((time.perf_counter() - turn_started) * 1000)
         self._mcp_router.record_routing_outcome(
             prompt=prompt,
+            session_id=session_id,
             connected_server_ids=execution.connected_servers,
             messages=agent.messages,
             latency_ms=elapsed_ms,
@@ -112,6 +129,7 @@ class RuntimeExecutor:
         *,
         agent: Manus,
         prompt: str,
+        session_id: str | None,
         time_budget_seconds: int,
         reuse_agent: bool,
         shared_agent_lock: asyncio.Lock,
@@ -119,7 +137,11 @@ class RuntimeExecutor:
     ) -> RuntimeExecutionResult:
         async def _inner() -> RuntimeExecutionResult:
             if not self._planning:
-                connected_servers = await self._mcp_router.connect_enabled_mcp_servers(agent, prompt)
+                connected_servers = await self._mcp_router.connect_enabled_mcp_servers(
+                    agent,
+                    prompt,
+                    session_id=session_id,
+                )
                 run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(prompt)
                 raw = await self._run_agent(
                     agent=agent,
@@ -134,7 +156,7 @@ class RuntimeExecutor:
                     expected_steps=expected_steps,
                 )
 
-            decision = await self._planning.decide(prompt)
+            decision = await self._planning.decide(prompt, session_id=session_id)
             plan = decision.execute_plan
             multi_step_enabled = self._policy.is_truthy_env(
                 os.getenv("BFF_RUNTIME_MULTI_STEP_EXECUTION", "0")
@@ -149,6 +171,13 @@ class RuntimeExecutor:
             )
 
             if not plan.need_mcp:
+                # Enforce strict "no MCP" execution: ensure reused agents cannot
+                # call already-available MCP tools.
+                self.strip_mcp_tools(agent)
+                try:
+                    await agent.disconnect_mcp_server()
+                except Exception as exc:
+                    logger.warning(f"Failed to disconnect MCP servers for no_mcp turn, ignored: {exc}")
                 run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(prompt)
                 raw = await self._run_agent(
                     agent=agent,
@@ -166,6 +195,7 @@ class RuntimeExecutor:
                 return await self._run_multi_step_plan(
                     agent=agent,
                     prompt=prompt,
+                    session_id=session_id,
                     plan_steps=list(plan.plan_steps),
                     fallback_server_id=plan.fallback.server_id,
                     fallback_tool_name=plan.fallback.tool_name,
@@ -217,6 +247,7 @@ class RuntimeExecutor:
         *,
         agent: Manus,
         prompt: str,
+        session_id: str | None,
         plan_steps: list[PlannerStep],
         fallback_server_id: str | None,
         fallback_tool_name: str | None,
@@ -317,6 +348,7 @@ class RuntimeExecutor:
                 step_index=index,
                 step=step,
                 connected_servers=connected_servers,
+                session_id=session_id,
                 success=step_done,
             )
 
@@ -443,6 +475,7 @@ class RuntimeExecutor:
         step_index: int,
         step: PlannerStep,
         connected_servers: list[str],
+        session_id: str | None,
         success: bool,
     ) -> None:
         request_preview = self._policy.extract_current_user_request(prompt)
@@ -455,6 +488,7 @@ class RuntimeExecutor:
         self._mcp_router.record_runtime_routing_event(
             {
                 "event_type": "step_outcome",
+                "session_id": session_id,
                 "prompt_hash": prompt_hash,
                 "intent": "planned_execution",
                 "selected_server_id": step.server_id,
