@@ -32,6 +32,62 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _parse_sse_message(raw: str) -> tuple[str, dict[str, Any]] | None:
+    if not raw:
+        return None
+    event_type: str | None = None
+    data_raw: str | None = None
+    for line in raw.strip().splitlines():
+        if line.startswith("event:"):
+            event_type = line[len("event:") :].strip()
+        elif line.startswith("data:"):
+            data_raw = line[len("data:") :].strip()
+    if not event_type:
+        return None
+    if not data_raw:
+        return event_type, {}
+    try:
+        payload = json.loads(data_raw)
+    except json.JSONDecodeError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return event_type, payload
+
+
+def _format_step_progress_message(payload: dict[str, Any]) -> str:
+    step = payload.get("step")
+    try:
+        step_num = int(step)
+    except Exception:
+        step_num = None
+    if step_num is not None and step_num > 0:
+        return f"执行步骤 {step_num}"
+    return "执行步骤"
+
+
+def _progress_mode() -> str:
+    mode = str(get_env("FEISHU_PROGRESS_MODE", "steps") or "steps").strip().lower()
+    if mode in {"steps", "thoughts", "both"}:
+        return mode
+    return "steps"
+
+
+def _format_thinking_progress_message(payload: dict[str, Any]) -> str:
+    message = str(payload.get("message") or "").strip()
+    if not message:
+        return ""
+    if "[truncated]" in message:
+        return ""
+    try:
+        max_len = int(str(get_env("FEISHU_THOUGHTS_MAX_CHARS", "220") or "220"))
+    except ValueError:
+        max_len = 220
+    if max_len > 0 and len(message) > max_len:
+        return ""
+    return message
+
+
 def _clear_current_task_cancellation() -> None:
     task = asyncio.current_task()
     if task is None or not hasattr(task, "uncancel"):
@@ -282,6 +338,21 @@ async def _send_text_message(chat_id: str, text: str) -> None:
             )
 
 
+async def _send_text_message_dedup(
+    chat_id: str,
+    text: str,
+    *,
+    last_sent: str | None,
+) -> str | None:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return last_sent
+    if last_sent is not None and normalized == last_sent:
+        return last_sent
+    await _send_text_message(chat_id, normalized)
+    return normalized
+
+
 def _extract_user_text(message: dict[str, Any]) -> str:
     msg_type = str(message.get("message_type") or "").strip()
     content_raw = str(message.get("content") or "").strip()
@@ -454,18 +525,101 @@ async def _handle_receive_event(event: dict[str, Any]) -> None:
         f"chat_id={chat_id}, message_id={message_id}, session_id={session_id}, text_len={len(user_text)}"
     )
     try:
-        result = await chat_service.send_message(
+        send_step_progress = _env_bool("FEISHU_SEND_STEP_PROGRESS", False)
+        if not send_step_progress:
+            result = await chat_service.send_message(
+                ChatRequest(
+                    content=user_text,
+                    sessionId=session_id,
+                    source="lark",
+                    userInputType="audio_asr" if msg_type == "audio" else "text",
+                )
+            )
+            assistant_text = str((result.get("data") or {}).get("content") or "").strip()
+            if not assistant_text:
+                assistant_text = "收到消息，但模型返回了空内容。"
+            await _send_text_message(chat_id, assistant_text)
+            return
+
+        chunks: list[str] = []
+        last_progress_text: str | None = None
+        last_sent_text: str | None = None
+        progress_count = 0
+        mode = _progress_mode()
+        has_started_reply = False
+        try:
+            max_progress = int(str(get_env("FEISHU_MAX_STEP_PROGRESS", "60") or "60"))
+        except ValueError:
+            max_progress = 60
+
+        async for raw_event in chat_service.stream_message(
             ChatRequest(
                 content=user_text,
                 sessionId=session_id,
                 source="lark",
                 userInputType="audio_asr" if msg_type == "audio" else "text",
             )
-        )
-        assistant_text = str((result.get("data") or {}).get("content") or "").strip()
+        ):
+            parsed = _parse_sse_message(raw_event)
+            if not parsed:
+                continue
+            event_type, payload = parsed
+
+            if event_type == "error":
+                message = str(payload.get("message") or "").strip() or "处理消息时发生错误，请稍后重试。"
+                await _send_text_message(chat_id, message)
+                return
+
+            if event_type == "progress" and str(payload.get("phase") or "") == "step_start":
+                if mode in {"steps", "both"}:
+                    if progress_count < max_progress:
+                        text = _format_step_progress_message(payload)
+                        if text and text != last_progress_text:
+                            last_sent_text = await _send_text_message_dedup(
+                                chat_id,
+                                text,
+                                last_sent=last_sent_text,
+                            )
+                            last_progress_text = text
+                            progress_count += 1
+                    continue
+
+            if event_type == "progress" and str(payload.get("phase") or "") == "thinking":
+                # If we already started receiving reply chunks, skip any subsequent thinking messages
+                # to avoid duplicating the final summary.
+                if has_started_reply:
+                    continue
+                if mode in {"thoughts", "both"}:
+                    if progress_count < max_progress:
+                        text = _format_thinking_progress_message(payload)
+                        if text and text != last_progress_text:
+                            last_sent_text = await _send_text_message_dedup(
+                                chat_id,
+                                text,
+                                last_sent=last_sent_text,
+                            )
+                            last_progress_text = text
+                            progress_count += 1
+                continue
+
+            if event_type == "chunk":
+                chunk = str(payload.get("content") or "")
+                if chunk:
+                    has_started_reply = True
+                    chunks.append(chunk)
+                continue
+
+            if event_type == "done":
+                break
+
+        assistant_text = "".join(chunks).strip()
         if not assistant_text:
             assistant_text = "收到消息，但模型返回了空内容。"
-        await _send_text_message(chat_id, assistant_text)
+        await _send_text_message_dedup(
+            chat_id,
+            assistant_text,
+            last_sent=last_sent_text,
+        )
     except asyncio.CancelledError:
         logger.warning(
             "Feishu message handling cancelled: "
