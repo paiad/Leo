@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from bff.services.runtime.runtime_plan_models import (
+from bff.services.runtime.mcp_routing.runtime_plan_models import (
     ERROR_SCHEMA_VIOLATION,
     ERROR_SERVER_NOT_ALLOWED,
     ERROR_TOOL_NOT_ALLOWED,

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from bff.services.runtime.runtime_mcp_router import RuntimeMcpRouter
-from bff.services.runtime.runtime_plan_models import PrefilterResult, PlannerFallback
+from bff.services.runtime.mcp_routing.runtime_mcp_router import RuntimeMcpRouter
+from bff.services.runtime.mcp_routing.runtime_plan_models import PrefilterResult, PlannerFallback
 
 
 class RuntimeMcpPrefilter:

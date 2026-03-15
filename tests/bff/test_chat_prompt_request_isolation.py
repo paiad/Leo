@@ -2,7 +2,7 @@ from bff.domain.models import MessageRecord, now_iso
 from bff.repositories.store import InMemoryStore
 from bff.services.chat.chat_service import ChatService
 from bff.services.chat.context_memory_service import ContextBundle
-from bff.services.runtime.runtime_mcp_router import RuntimeMcpRouter
+from bff.services.runtime.mcp_routing.runtime_mcp_router import RuntimeMcpRouter
 
 
 class _FakeRuntime:

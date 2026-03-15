@@ -1,7 +1,7 @@
 from bff.domain.models import McpServerRecord
 from bff.repositories.store import InMemoryStore
-from bff.services.runtime.runtime_mcp_router import RuntimeMcpRouter
-from bff.services.runtime.runtime_prefilter import RuntimeMcpPrefilter
+from bff.services.runtime.mcp_routing.runtime_mcp_router import RuntimeMcpRouter
+from bff.services.runtime.mcp_routing.runtime_prefilter import RuntimeMcpPrefilter
 
 
 def _server(server_id: str) -> McpServerRecord:

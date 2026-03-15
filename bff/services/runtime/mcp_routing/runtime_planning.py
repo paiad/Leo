@@ -5,9 +5,9 @@ import os
 from typing import Any
 
 from app.logger import logger
-from bff.services.runtime.runtime_mcp_router import RuntimeMcpRouter
-from bff.services.runtime.runtime_logviz import render_ascii_box
-from bff.services.runtime.runtime_plan_models import (
+from bff.services.runtime.mcp_routing.runtime_mcp_router import RuntimeMcpRouter
+from bff.services.runtime.mcp_routing.runtime_logviz import render_ascii_box
+from bff.services.runtime.mcp_routing.runtime_plan_models import (
     ERROR_INVALID_JSON,
     PlanningDecision,
     PlannerFallback,
@@ -15,9 +15,9 @@ from bff.services.runtime.runtime_plan_models import (
     PlannerStep,
     PrefilterResult,
 )
-from bff.services.runtime.runtime_planner import RuntimeMcpPlanner
-from bff.services.runtime.runtime_prefilter import RuntimeMcpPrefilter
-from bff.services.runtime.runtime_plan_validator import RuntimeMcpPlanValidator
+from bff.services.runtime.mcp_routing.runtime_planner import RuntimeMcpPlanner
+from bff.services.runtime.mcp_routing.runtime_prefilter import RuntimeMcpPrefilter
+from bff.services.runtime.mcp_routing.runtime_plan_validator import RuntimeMcpPlanValidator
 
 
 class RuntimeMcpPlanningOrchestrator:

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from bff.domain.models import McpRoutingPolicyRecord
 from bff.repositories.store import InMemoryStore
 from bff.services.runtime.agent_runtime import ManusRuntime
-from bff.services.runtime.runtime_mcp_router import RuntimeMcpRouter
+from bff.services.runtime.mcp_routing.runtime_mcp_router import RuntimeMcpRouter
 
 
 def test_mcp_selection_ignores_history_wrapper_noise():

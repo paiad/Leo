@@ -2,9 +2,9 @@ import pytest
 
 from bff.domain.models import McpServerRecord
 from bff.repositories.store import InMemoryStore
-from bff.services.runtime.runtime_mcp_router import RuntimeMcpRouter
-from bff.services.runtime.runtime_plan_models import PlannerRawResult
-from bff.services.runtime.runtime_planning import RuntimeMcpPlanningOrchestrator
+from bff.services.runtime.mcp_routing.runtime_mcp_router import RuntimeMcpRouter
+from bff.services.runtime.mcp_routing.runtime_plan_models import PlannerRawResult
+from bff.services.runtime.mcp_routing.runtime_planning import RuntimeMcpPlanningOrchestrator
 
 
 def _server(server_id: str) -> McpServerRecord:

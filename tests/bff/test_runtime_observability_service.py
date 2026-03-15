@@ -1,5 +1,5 @@
 from bff.repositories.store import InMemoryStore
-from bff.services.runtime.runtime_observability_service import RuntimeObservabilityService
+from bff.services.runtime.observability.runtime_observability_service import RuntimeObservabilityService
 
 
 def _record(store: InMemoryStore, payload: dict):

@@ -12,8 +12,8 @@ from bff.repositories.store import InMemoryStore
 from bff.services.runtime.runtime_events import RuntimeEventManager
 from bff.services.runtime.runtime_executor import RuntimeExecutor
 from bff.services.runtime.runtime_finalizer import RuntimeFinalizer
-from bff.services.runtime.runtime_mcp_router import RuntimeMcpRouter
-from bff.services.runtime.runtime_planning import RuntimeMcpPlanningOrchestrator
+from bff.services.runtime.mcp_routing.runtime_mcp_router import RuntimeMcpRouter
+from bff.services.runtime.mcp_routing.runtime_planning import RuntimeMcpPlanningOrchestrator
 from bff.services.runtime.runtime_policy import RuntimePolicy, RuntimeStallDetector
 from bff.services.runtime.runtime_progress import RuntimeProgressEmitter
 

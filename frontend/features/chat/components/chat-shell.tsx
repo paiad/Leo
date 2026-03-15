@@ -103,6 +103,10 @@ export function ChatShell() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
+  const [requestNotice, setRequestNotice] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
   const [pendingTime, setPendingTime] = useState<string | null>(null);
   const [hasStreamStarted, setHasStreamStarted] = useState(false);
   const [activeSource, setActiveSource] = useState<ChatSource>("browser");
@@ -353,23 +357,61 @@ export function ChatShell() {
     }
 
     setIsClearingMessages(true);
+    setRequestNotice(null);
     try {
       const sessions = await fetchChatSessions();
       const scopedSessions = sessions.filter(
         (session) => inferSessionSource(session) === activeSource,
       );
+
+      if (scopedSessions.length === 0) {
+        setMessages([]);
+        setRequestError(null);
+        setRequestNotice({
+          type: "success",
+          text: `${activeSource === "lark" ? "Lark" : "Browser"} 当前没有可清空的会话消息`,
+        });
+        return;
+      }
+
       const results = await Promise.allSettled(
         scopedSessions.map((session) => clearChatSessionMessages(session.id)),
       );
-      const failedCount = results.filter((result) => result.status === "rejected").length;
+      const failedResults = results.filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      const failedCount = failedResults.length;
       if (failedCount > 0) {
-        throw new Error(`部分会话清空失败（${failedCount}/${results.length}）`);
+        const reasons = failedResults
+          .map((result) =>
+            result.reason instanceof Error
+              ? result.reason.message
+              : String(result.reason ?? "未知错误"),
+          )
+          .filter((reason) => reason.trim().length > 0);
+        const reasonText =
+          reasons.length > 0 ? `：${reasons.slice(0, 2).join("；")}` : "";
+        throw new Error(`部分会话清空失败（${failedCount}/${results.length}）${reasonText}`);
       }
+      const deletedCount = results.reduce((total, result) => {
+        if (result.status === "fulfilled") {
+          return total + result.value;
+        }
+        return total;
+      }, 0);
       setMessages([]);
       setRequestError(null);
+      setRequestNotice({
+        type: "success",
+        text: `清空成功：已删除 ${deletedCount} 条消息`,
+      });
     } catch (error) {
       const messageText = error instanceof Error ? error.message : "清空失败，请稍后重试";
-      setRequestError(messageText);
+      setRequestError(null);
+      setRequestNotice({
+        type: "error",
+        text: messageText,
+      });
     } finally {
       setIsClearingMessages(false);
     }
@@ -471,6 +513,7 @@ export function ChatShell() {
 
     appendMessage(userMessage);
     setRequestError(null);
+    setRequestNotice(null);
     setIsSending(true);
     setPendingTime(sentAt);
     setHasStreamStarted(false);
@@ -648,6 +691,7 @@ export function ChatShell() {
     setActiveSource(source);
     window.localStorage.setItem(CHAT_ACTIVE_SOURCE_STORAGE_KEY, source);
     setRequestError(null);
+    setRequestNotice(null);
   };
 
   return (
@@ -699,6 +743,17 @@ export function ChatShell() {
             {requestError ? (
               <p className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">
                 {requestError}
+              </p>
+            ) : null}
+            {requestNotice ? (
+              <p
+                className={`mb-2 rounded-lg border px-3 py-2 text-xs ${
+                  requestNotice.type === "success"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : "border-red-200 bg-red-50 text-red-600"
+                }`}
+              >
+                {requestNotice.text}
               </p>
             ) : null}
           </div>
