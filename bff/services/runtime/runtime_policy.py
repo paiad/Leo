@@ -199,3 +199,13 @@ class RuntimePolicy:
             "必须基于 TrendRadar 工具返回的数据作答，不要改用 python_execute 抓网页。\n"
         )
         return f"{prompt}\n\n{reminder}"
+
+    @staticmethod
+    def build_forced_playwright_retry_prompt(prompt: str) -> str:
+        reminder = (
+            "[Runtime Enforcement]\n"
+            "你必须至少调用一次 Playwright MCP 工具完成网页操作，再给出最终答复。\n"
+            "优先调用 mcp_playwright_browser_navigate，然后按需调用 click/type 等工具。\n"
+            "禁止把网页操作替换为 str_replace_editor 或 python_execute。\n"
+        )
+        return f"{prompt}\n\n{reminder}"

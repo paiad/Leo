@@ -130,6 +130,127 @@ class MemorySyncService:
             except Exception:
                 pass
 
+    async def forget_session(self, *, source: str, session_id: str) -> None:
+        if not is_memory_sync_enabled():
+            return
+        if not self._store:
+            return
+
+        server = self._store.mcp_servers.get("memory")
+        if not server or not server.enabled:
+            return
+
+        clients = MCPClients()
+        try:
+            if server.type == "stdio":
+                if not server.command:
+                    return
+                await clients.connect_stdio(
+                    command=server.command,
+                    args=server.args or [],
+                    server_id=server.serverId,
+                    env=server.env or None,
+                )
+            elif server.type == "streamablehttp":
+                if not server.url:
+                    return
+                await clients.connect_streamable_http(
+                    server.url,
+                    server.serverId,
+                    headers=server.env or None,
+                )
+            else:
+                if not server.url:
+                    return
+                await clients.connect_sse(
+                    server.url,
+                    server.serverId,
+                    headers=server.env or None,
+                )
+
+            session = clients.sessions.get(server.serverId)
+            if session is None:
+                return
+
+            tools_response = await session.list_tools()
+            tool_names = {tool.name for tool in tools_response.tools}
+            if not tool_names:
+                return
+
+            entity_name = f"session:{source}:{session_id}"
+            removed = await self._forget_with_known_tools(
+                session=session,
+                tool_names=tool_names,
+                entity_name=entity_name,
+            )
+            if removed:
+                logger.info(
+                    "Memory MCP forget session success: "
+                    f"session_id={session_id}, source={source}, tools={sorted(tool_names)}"
+                )
+        finally:
+            try:
+                await clients.disconnect()
+            except Exception:
+                pass
+
+    async def _forget_with_known_tools(
+        self,
+        *,
+        session: Any,
+        tool_names: set[str],
+        entity_name: str,
+    ) -> bool:
+        if "delete_entities" in tool_names:
+            delete_entity_args = (
+                {"entityNames": [entity_name]},
+                {"names": [entity_name]},
+                {"entities": [entity_name]},
+                {"entityName": entity_name},
+                {"entity_name": entity_name},
+                {"name": entity_name},
+            )
+            for args in delete_entity_args:
+                if await self._safe_call_tool(session=session, tool_name="delete_entities", args=args):
+                    return True
+
+        if "delete_observations" in tool_names:
+            delete_observation_args = (
+                {"entityName": entity_name, "contents": []},
+                {"entity_name": entity_name, "contents": []},
+                {"entityName": entity_name},
+                {"entity_name": entity_name},
+            )
+            for args in delete_observation_args:
+                if await self._safe_call_tool(
+                    session=session, tool_name="delete_observations", args=args
+                ):
+                    return True
+
+        for tool_name in (
+            "forget",
+            "delete_memory",
+            "remove_memory",
+            "erase_memory",
+        ):
+            if tool_name not in tool_names:
+                continue
+            if await self._safe_call_tool(
+                session=session,
+                tool_name=tool_name,
+                args={"entity": entity_name, "text": entity_name},
+            ):
+                return True
+        return False
+
+    @staticmethod
+    async def _safe_call_tool(*, session: Any, tool_name: str, args: dict[str, Any]) -> bool:
+        try:
+            await session.call_tool(tool_name, args)
+            return True
+        except Exception:
+            return False
+
     async def _sync_with_known_tools(
         self,
         *,

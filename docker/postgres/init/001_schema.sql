@@ -74,3 +74,32 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
 );
 
 CREATE INDEX IF NOT EXISTS idx_mcp_servers_enabled ON mcp_servers(enabled);
+
+CREATE TABLE IF NOT EXISTS runtime_mcp_routing_policies (
+    intent TEXT NOT NULL,
+    server_id TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    score_bias INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (intent, server_id)
+);
+
+CREATE TABLE IF NOT EXISTS runtime_mcp_routing_events (
+    id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL DEFAULT 'decision',
+    prompt_hash TEXT NOT NULL,
+    intent TEXT NOT NULL,
+    selected_server_id TEXT,
+    candidate_servers_json TEXT NOT NULL DEFAULT '[]',
+    scores_json TEXT NOT NULL DEFAULT '{}',
+    connected_servers_json TEXT NOT NULL DEFAULT '[]',
+    used_servers_json TEXT NOT NULL DEFAULT '[]',
+    success BOOLEAN,
+    latency_ms INTEGER,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_runtime_mcp_routing_events_created
+    ON runtime_mcp_routing_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_runtime_mcp_routing_events_intent_server
+    ON runtime_mcp_routing_events(intent, selected_server_id);

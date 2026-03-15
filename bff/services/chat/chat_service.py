@@ -453,15 +453,37 @@ class ChatService:
             self._store.persist_sessions()
         return before != len(session.messages)
 
-    def clear_session_messages(self, session_id: str) -> int | None:
-        session = self._store.sessions.get(session_id)
-        if not session:
-            return None
-        deleted = len(session.messages)
-        session.messages = []
-        session.updatedAt = now_iso()
-        if deleted > 0:
+    async def clear_session_messages(self, session_id: str) -> int | None:
+        async with self._lock:
+            session = self._store.sessions.get(session_id)
+            if not session:
+                return None
+            deleted = len(session.messages)
+            source = self._session_source(session)
+            session.messages = []
+            session.updatedAt = now_iso()
             self._store.persist_sessions()
+
+        try:
+            self._context_memory.purge_session_memory(session_id=session_id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to purge context memory for session clear: "
+                f"session_id={session_id}, error={exc}"
+            )
+
+        if self._memory_sync:
+            try:
+                await self._memory_sync.forget_session(
+                    source=source,
+                    session_id=session_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to purge Memory MCP session state: "
+                    f"session_id={session_id}, source={source}, error={exc}"
+                )
+
         return deleted
 
     async def send_message(self, payload: ChatRequest) -> dict[str, Any]:

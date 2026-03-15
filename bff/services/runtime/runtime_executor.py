@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -50,6 +51,7 @@ class RuntimeExecutor:
         emit_progress: Callable[[Callable[[dict[str, Any]], Any] | None, dict[str, Any]], Any],
         run_state: dict[str, bool],
     ) -> RuntimeExecutionResult:
+        turn_started = time.perf_counter()
         await emit_progress(
             progress_callback,
             {
@@ -139,6 +141,49 @@ class RuntimeExecutor:
                 run_state=run_state,
             )
 
+        playwright_retry_enabled = self._policy.is_truthy_env(
+            os.getenv("BFF_RUNTIME_PLAYWRIGHT_RETRY_ON_MISS", "1")
+        )
+        playwright_expected = self._mcp_router.should_force_playwright_for_prompt(prompt)
+        playwright_used = self._policy.has_server_tool_activity(agent.messages, "playwright")
+        logger.info(
+            "Playwright execution check: "
+            f"connected={bool('playwright' in (connected_servers or []))}, "
+            f"expected={playwright_expected}, used={playwright_used}, "
+            f"retry_enabled={playwright_retry_enabled}"
+        )
+        if playwright_retry_enabled and playwright_expected and not playwright_used:
+            logger.warning(
+                "Playwright expected but no playwright tool call detected; triggering one retry with forced Playwright instruction."
+            )
+            await emit_progress(
+                progress_callback,
+                {
+                    "type": "progress",
+                    "phase": "act_retry",
+                    "maxSteps": steps,
+                    "message": "检测到浏览器任务未触发 Playwright，正在执行一次强制重试",
+                },
+            )
+            raw = await self._run_playwright_retry(
+                agent=agent,
+                prompt=prompt,
+                connected_servers=connected_servers,
+                time_budget_seconds=time_budget_seconds,
+                reuse_agent=reuse_agent,
+                shared_agent_lock=shared_agent_lock,
+                run_state=run_state,
+            )
+
+        elapsed_ms = int((time.perf_counter() - turn_started) * 1000)
+        self._mcp_router.record_routing_outcome(
+            prompt=prompt,
+            connected_server_ids=connected_servers,
+            messages=agent.messages,
+            latency_ms=elapsed_ms,
+            success=bool((raw or "").strip()),
+        )
+
         return RuntimeExecutionResult(raw=raw, connected_servers=connected_servers)
 
     async def _run_main_round(
@@ -222,6 +267,41 @@ class RuntimeExecutor:
                 )
                 logger.info(
                     f"Forced trendradar connection during retry: connected={connected}"
+                )
+            return await self._run_agent(
+                agent=agent,
+                run_prompt=retry_run_prompt,
+                time_budget_seconds=time_budget_seconds,
+                run_state=run_state,
+            )
+
+        return await self._run_with_optional_lock(
+            reuse_agent=reuse_agent,
+            shared_agent_lock=shared_agent_lock,
+            action=_inner,
+        )
+
+    async def _run_playwright_retry(
+        self,
+        *,
+        agent: Manus,
+        prompt: str,
+        connected_servers: list[str] | None,
+        time_budget_seconds: int,
+        reuse_agent: bool,
+        shared_agent_lock: asyncio.Lock,
+        run_state: dict[str, bool],
+    ) -> str:
+        retry_prompt = self._policy.build_forced_playwright_retry_prompt(prompt)
+        retry_run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(retry_prompt)
+
+        async def _inner() -> str:
+            if "playwright" not in (connected_servers or []):
+                connected = await self._mcp_router.connect_server_by_id(
+                    agent, "playwright"
+                )
+                logger.info(
+                    f"Forced playwright connection during retry: connected={connected}"
                 )
             return await self._run_agent(
                 agent=agent,

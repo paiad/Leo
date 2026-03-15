@@ -182,6 +182,11 @@ class ContextMemoryService:
         self._repo.consolidate_global_summary(session_id=session_id, trigger=self._global_trigger)
         self._repo.trim_rolling_summaries(session_id=session_id, keep=self._rolling_active_keep)
 
+    def purge_session_memory(self, *, session_id: str) -> None:
+        if not self.is_available:
+            return
+        self._repo.purge_session_memory(session_id=session_id)
+
     async def _extract_turn_struct(
         self,
         *,

@@ -221,6 +221,13 @@ class ToolCallAgent(ReActAgent):
                     "For hot/news requests, use TrendRadar MCP tools such as "
                     "`mcp_trendradar_get_latest_news` or `mcp_trendradar_search_news`."
                 )
+            if self._should_block_editor_for_browser_task(name=name, args=args):
+                return (
+                    "Error: Policy blocked `str_replace_editor` for browser automation tasks. "
+                    "For website operations, use Playwright MCP tools such as "
+                    "`mcp_playwright_browser_navigate`, "
+                    "`mcp_playwright_browser_click`, `mcp_playwright_browser_type`."
+                )
 
             # Execute the tool
             logger.info(f"🔧 Activating tool: '{name}'...")
@@ -278,17 +285,7 @@ class ToolCallAgent(ReActAgent):
         )
 
     def _user_explicitly_requests_python_browser_script(self) -> bool:
-        last_user_text = ""
-        for msg in reversed(self.memory.messages):
-            if msg.role == "user" and msg.content:
-                # The agent appends `next_step_prompt` as a synthetic user message
-                # each step; it is not an actual user intent signal.
-                if self.next_step_prompt and (
-                    msg.content.strip() == self.next_step_prompt.strip()
-                ):
-                    continue
-                last_user_text = msg.content.lower()
-                break
+        last_user_text = self._last_real_user_text()
 
         if not last_user_text:
             return False
@@ -317,6 +314,18 @@ class ToolCallAgent(ReActAgent):
         return any(h in last_user_text for h in python_hints) and any(
             h in last_user_text for h in browser_hints
         )
+
+    def _last_real_user_text(self) -> str:
+        for msg in reversed(self.memory.messages):
+            if msg.role == "user" and msg.content:
+                # The agent appends `next_step_prompt` as a synthetic user message
+                # each step; it is not an actual user intent signal.
+                if self.next_step_prompt and (
+                    msg.content.strip() == self.next_step_prompt.strip()
+                ):
+                    continue
+                return msg.content.lower()
+        return ""
 
     def _should_block_python_browser_automation(
         self, name: str, args: dict[str, Any]
@@ -386,15 +395,7 @@ class ToolCallAgent(ReActAgent):
         )
 
     def _user_explicitly_requests_python_news_script(self) -> bool:
-        last_user_text = ""
-        for msg in reversed(self.memory.messages):
-            if msg.role == "user" and msg.content:
-                if self.next_step_prompt and (
-                    msg.content.strip() == self.next_step_prompt.strip()
-                ):
-                    continue
-                last_user_text = msg.content.lower()
-                break
+        last_user_text = self._last_real_user_text()
 
         if not last_user_text:
             return False
@@ -451,6 +452,67 @@ class ToolCallAgent(ReActAgent):
             return False
 
         return True
+
+    def _looks_like_browser_task_request(self) -> bool:
+        last_user_text = self._last_real_user_text()
+        if not last_user_text:
+            return False
+        hints = (
+            "b站",
+            "bilibili",
+            "youtube",
+            "浏览器",
+            "网页",
+            "网站",
+            "打开",
+            "播放",
+            "点击",
+            "video",
+            "music",
+            "song",
+        )
+        return any(hint in last_user_text for hint in hints)
+
+    def _user_explicitly_requests_file_editing(self) -> bool:
+        last_user_text = self._last_real_user_text()
+        if not last_user_text:
+            return False
+        hints = (
+            "编辑文件",
+            "修改文件",
+            "查看文件",
+            "代码",
+            "repo",
+            "repository",
+            "patch",
+            "diff",
+            "str_replace_editor",
+            "workspace",
+            "目录",
+            "文件夹",
+            "file",
+            "folder",
+        )
+        return any(hint in last_user_text for hint in hints)
+
+    def _should_block_editor_for_browser_task(
+        self, name: str, args: dict[str, Any]
+    ) -> bool:
+        if name != "str_replace_editor":
+            return False
+        if (
+            os.getenv("BFF_ALLOW_EDITOR_FOR_BROWSER_TASK", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        ):
+            return False
+        if not self._looks_like_browser_task_request():
+            return False
+        if self._user_explicitly_requests_file_editing():
+            return False
+        command = str(args.get("command") or "").strip().lower()
+        # In browser tasks, `view/create/str_replace/insert` on workspace files is
+        # almost always a planning detour rather than user intent.
+        return command in {"view", "create", "str_replace", "insert", "undo_edit"}
 
     async def _handle_special_tool(self, name: str, result: Any, **kwargs):
         """Handle special tool execution and state changes"""

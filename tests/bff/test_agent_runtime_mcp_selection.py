@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+from bff.domain.models import McpRoutingPolicyRecord
+from bff.repositories.store import InMemoryStore
 from bff.services.runtime.agent_runtime import ManusRuntime
 from bff.services.runtime.runtime_mcp_router import RuntimeMcpRouter
 
@@ -240,3 +242,59 @@ def test_news_keywords_override_browser_wording_to_trendradar():
         router._normalize_text(router._extract_current_user_request(prompt))
     )
     assert intent == "web_search"
+
+
+def test_mixed_news_and_browser_request_prefers_browser_intent_first():
+    router = RuntimeMcpRouter(store=None)
+    prompt = "[Current User Request]\n先查抖音热点top20，再打开B站播放稻香"
+
+    intent = router._classify_intent(
+        router._normalize_text(router._extract_current_user_request(prompt))
+    )
+    assert intent == "browser_automation"
+
+
+def test_force_playwright_for_browser_prompt():
+    router = RuntimeMcpRouter(store=None)
+    prompt = "[Current User Request]\n打开B站并播放周杰伦稻香"
+
+    assert router.should_force_playwright_for_prompt(prompt) is True
+
+
+def test_mcp_selection_respects_policy_disable():
+    store = InMemoryStore(enable_persistence=False)
+    store.mcp_routing_policies["web_search:trendradar"] = McpRoutingPolicyRecord(
+        intent="web_search",
+        serverId="trendradar",
+        enabled=False,
+        scoreBias=0,
+    )
+    runtime = ManusRuntime(store=store)
+    trendradar = SimpleNamespace(
+        serverId="trendradar",
+        name="trendradar",
+        description="TrendRadar MCP Server",
+        discoveredTools=[],
+    )
+    prompt = "[Current User Request]\n搜索抖音今日热点top5"
+
+    assert runtime._should_connect_server(prompt, trendradar) is False
+
+
+def test_mcp_ranking_respects_policy_score_bias():
+    store = InMemoryStore(enable_persistence=False)
+    store.mcp_routing_policies["web_search:exa"] = McpRoutingPolicyRecord(
+        intent="web_search",
+        serverId="exa",
+        enabled=True,
+        scoreBias=80,
+    )
+    router = RuntimeMcpRouter(store=store)
+    servers = [
+        SimpleNamespace(serverId="exa"),
+        SimpleNamespace(serverId="trendradar"),
+    ]
+    prompt = "[Current User Request]\n搜索抖音今日热点top5"
+
+    ranked = router._rank_selected_servers(prompt, servers)
+    assert ranked[0].serverId == "exa"

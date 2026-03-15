@@ -49,6 +49,15 @@ class ContextMemoryRepository:
                 fact_rows = cur.fetchall()
         return summary_rows, fact_rows
 
+    def purge_session_memory(self, *, session_id: str) -> None:
+        with self._connect() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("DELETE FROM chat_context_injections WHERE session_id = %s", (session_id,))
+                cur.execute("DELETE FROM chat_decisions WHERE session_id = %s", (session_id,))
+                cur.execute("DELETE FROM chat_memory_facts WHERE session_id = %s", (session_id,))
+                cur.execute("DELETE FROM chat_session_summaries WHERE session_id = %s", (session_id,))
+            conn.commit()
+
     def touch_used_facts(self, *, fact_ids: list[int]) -> None:
         if not fact_ids:
             return

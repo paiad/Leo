@@ -80,7 +80,7 @@ export function ChatComposer({
         >
           <p className="text-sm font-semibold text-slate-800">清空 {clearScopeLabel} 聊天记录？</p>
           <p className="mt-1 text-xs text-slate-500">
-            该操作会删除当前来源（{clearScopeLabel}）全部会话中的消息记录。
+            该操作会删除当前来源（{clearScopeLabel}）全部会话中的消息记录与会话记忆。
           </p>
           <div className="mt-3 flex items-center justify-end gap-2">
             <button

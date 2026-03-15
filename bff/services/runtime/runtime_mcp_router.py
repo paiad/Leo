@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from typing import Any, Literal
@@ -7,6 +8,7 @@ from typing import Any, Literal
 from app.agent.manus import Manus
 from app.logger import logger
 from bff.repositories.store import InMemoryStore
+from bff.services.runtime.runtime_policy import RuntimePolicy
 
 
 class RuntimeMcpRouter:
@@ -161,6 +163,27 @@ class RuntimeMcpRouter:
         "歌曲",
         "b站",
     }
+    _BROWSER_STRONG_ACTION_HINTS = {
+        "play",
+        "pause",
+        "video",
+        "music",
+        "song",
+        "bilibili",
+        "youtube",
+        "browser",
+        "click",
+        "fill form",
+        "截图",
+        "浏览器",
+        "点击",
+        "播放",
+        "暂停",
+        "视频",
+        "音乐",
+        "歌曲",
+        "b站",
+    }
 
     def __init__(self, store: InMemoryStore | None = None):
         self._store = store
@@ -252,16 +275,41 @@ class RuntimeMcpRouter:
             return False
         return self._looks_like_trendradar_news_request(prompt_text)
 
+    def should_force_playwright_for_prompt(self, prompt: str) -> bool:
+        if not self._is_truthy_env(os.getenv("BFF_RUNTIME_FORCE_PLAYWRIGHT_FOR_BROWSER", "1")):
+            return False
+        prompt_text = self._normalize_text(self._extract_current_user_request(prompt))
+        if not prompt_text:
+            return False
+        if self._is_tooling_meta_query(prompt_text):
+            return False
+        return self._looks_like_strong_browser_action_request(prompt_text)
+
     def _looks_like_browser_action_request(self, prompt_text: str) -> bool:
         if not prompt_text:
             return False
         return any(hint in prompt_text for hint in self._BROWSER_ACTION_HINTS)
+
+    def _looks_like_strong_browser_action_request(self, prompt_text: str) -> bool:
+        if not prompt_text:
+            return False
+        return any(hint in prompt_text for hint in self._BROWSER_STRONG_ACTION_HINTS)
+
+    def _looks_like_mixed_news_and_browser_request(self, prompt_text: str) -> bool:
+        return self._looks_like_trendradar_news_request(
+            prompt_text
+        ) and self._looks_like_strong_browser_action_request(prompt_text)
 
     def _classify_intent(self, prompt_text: str) -> IntentType:
         if not prompt_text:
             return "general"
         if self._is_tooling_meta_query(prompt_text):
             return "tooling_meta"
+        # Mixed request (e.g. "查热点并打开B站播放") should prioritize
+        # browser automation for the first round, then rely on retry policy to
+        # enforce the missing search step if needed.
+        if self._looks_like_mixed_news_and_browser_request(prompt_text):
+            return "browser_automation"
         # Prefer TrendRadar for news/hot-topic asks even if the user also says
         # "打开" or other browser words.
         if self._looks_like_trendradar_news_request(prompt_text):
@@ -336,15 +384,99 @@ class RuntimeMcpRouter:
             return 55
         return 60
 
-    def _rank_selected_servers(self, prompt: str, servers: list[Any]) -> list[Any]:
-        prompt_text = self._normalize_text(self._extract_current_user_request(prompt))
-        return sorted(
-            servers,
-            key=lambda s: (
-                self._server_priority(prompt_text, getattr(s, "serverId", "")),
-                getattr(s, "serverId", ""),
-            ),
+    def _policy_for(self, intent: IntentType, server_id: str) -> Any:
+        if not self._store:
+            return None
+        getter = getattr(self._store, "get_mcp_routing_policy", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter(intent, server_id)
+        except Exception:
+            return None
+
+    def _policy_allows_server(self, intent: IntentType, server_id: str) -> bool:
+        policy = self._policy_for(intent, server_id)
+        if policy is None:
+            return True
+        return bool(getattr(policy, "enabled", True))
+
+    def _policy_score_bias(self, intent: IntentType, server_id: str) -> int:
+        policy = self._policy_for(intent, server_id)
+        if policy is None:
+            return 0
+        try:
+            return int(getattr(policy, "scoreBias", 0) or 0)
+        except Exception:
+            return 0
+
+    def _build_server_metadata_parts(self, server: Any) -> list[str]:
+        server_id = getattr(server, "serverId", "")
+        metadata_parts: list[str] = [
+            self._normalize_text(server_id),
+            self._normalize_text(getattr(server, "name", "")),
+            self._normalize_text(getattr(server, "description", "")),
+        ]
+        discovered_tools = getattr(server, "discoveredTools", []) or []
+        for tool in discovered_tools:
+            metadata_parts.append(self._normalize_text(getattr(tool, "name", "")))
+            metadata_parts.append(self._normalize_text(getattr(tool, "description", "")))
+        return [part for part in metadata_parts if part]
+
+    def _keyword_overlap_count(self, prompt_text: str, server: Any) -> int:
+        server_id = getattr(server, "serverId", "")
+        metadata_parts = self._build_server_metadata_parts(server)
+        metadata_text = " ".join(metadata_parts)
+        alias_set = self._server_aliases(server_id)
+
+        phrase_hits = sum(1 for alias in alias_set if alias and alias in prompt_text)
+        phrase_hits += sum(
+            1 for part in metadata_parts if part and len(part) >= 3 and part in prompt_text
         )
+
+        prompt_tokens = self._tokenize_words(prompt_text) - self._MCP_ROUTING_STOPWORDS
+        metadata_tokens = self._tokenize_words(metadata_text) - self._MCP_ROUTING_STOPWORDS
+        alias_tokens = {
+            tok
+            for alias in alias_set
+            for tok in (self._tokenize_words(alias) - self._MCP_ROUTING_STOPWORDS)
+        }
+        token_hits = len(prompt_tokens & (metadata_tokens | alias_tokens))
+        return phrase_hits + token_hits
+
+    def _server_score(self, prompt_text: str, intent: IntentType, server: Any) -> int:
+        server_id = self._normalize_text(getattr(server, "serverId", ""))
+        base_score = 100 - self._server_priority(prompt_text, server_id)
+        explicit_bonus = 35 if self._server_explicitly_mentioned(prompt_text, server) else 0
+        overlap_hits = self._keyword_overlap_count(prompt_text, server)
+        overlap_bonus = min(4, overlap_hits) * 8
+        policy_bias = self._policy_score_bias(intent, server_id)
+        return base_score + explicit_bonus + overlap_bonus + policy_bias
+
+    def _rank_selected_servers_with_scores(
+        self, prompt: str, servers: list[Any]
+    ) -> tuple[list[Any], dict[str, int]]:
+        prompt_text = self._normalize_text(self._extract_current_user_request(prompt))
+        intent = self._classify_intent(prompt_text)
+        scored_servers = [
+            (server, self._server_score(prompt_text, intent, server)) for server in servers
+        ]
+        scored_servers.sort(
+            key=lambda item: (
+                -item[1],
+                self._normalize_text(getattr(item[0], "serverId", "")),
+            )
+        )
+        ranked_servers = [item[0] for item in scored_servers]
+        score_map = {
+            self._normalize_text(getattr(server, "serverId", "")): score
+            for server, score in scored_servers
+        }
+        return ranked_servers, score_map
+
+    def _rank_selected_servers(self, prompt: str, servers: list[Any]) -> list[Any]:
+        ranked_servers, _ = self._rank_selected_servers_with_scores(prompt, servers)
+        return ranked_servers
 
     @staticmethod
     def _expand_path(value: str | None) -> str | None:
@@ -496,22 +628,13 @@ class RuntimeMcpRouter:
             return False
 
         server_id = getattr(server, "serverId", "")
+        if not self._policy_allows_server(intent, server_id):
+            return False
         if server_id == "rag" and self.should_force_rag_for_prompt(prompt):
             logger.info("MCP routing: force-select rag for knowledge QA request")
             return True
 
-        metadata_parts: list[str] = [
-            self._normalize_text(server_id),
-            self._normalize_text(getattr(server, "name", "")),
-            self._normalize_text(getattr(server, "description", "")),
-        ]
-        discovered_tools = getattr(server, "discoveredTools", []) or []
-        for tool in discovered_tools:
-            tool_name = getattr(tool, "name", "")
-            tool_desc = getattr(tool, "description", "")
-            metadata_parts.append(self._normalize_text(tool_name))
-            metadata_parts.append(self._normalize_text(tool_desc))
-
+        metadata_parts = self._build_server_metadata_parts(server)
         metadata_text = " ".join(part for part in metadata_parts if part)
         alias_set = self._server_aliases(server_id)
 
@@ -534,6 +657,53 @@ class RuntimeMcpRouter:
         if not prompt_tokens:
             return False
         return len(prompt_tokens & (metadata_tokens | alias_tokens)) > 0
+
+    @staticmethod
+    def _hash_prompt(prompt_text: str) -> str:
+        return hashlib.sha256((prompt_text or "").encode("utf-8")).hexdigest()
+
+    def _record_routing_event(self, payload: dict[str, Any]) -> None:
+        if not self._store:
+            return
+        recorder = getattr(self._store, "record_mcp_routing_event", None)
+        if not callable(recorder):
+            return
+        try:
+            recorder(payload)
+        except Exception as exc:
+            logger.warning(f"Failed to persist MCP routing event: {exc}")
+
+    def record_routing_outcome(
+        self,
+        *,
+        prompt: str,
+        connected_server_ids: list[str] | None,
+        messages: list[Any],
+        latency_ms: int | None,
+        success: bool | None,
+    ) -> None:
+        prompt_text = self._normalize_text(self._extract_current_user_request(prompt))
+        if not prompt_text:
+            return
+        connected = [self._normalize_text(server_id) for server_id in (connected_server_ids or []) if server_id]
+        used_servers = [
+            server_id
+            for server_id in connected
+            if RuntimePolicy.has_server_tool_activity(messages, server_id)
+        ]
+        intent = self._classify_intent(prompt_text)
+        self._record_routing_event(
+            {
+                "event_type": "outcome",
+                "prompt_hash": self._hash_prompt(prompt_text),
+                "intent": intent,
+                "selected_server_id": connected[0] if connected else None,
+                "connected_servers": connected,
+                "used_servers": used_servers,
+                "success": success,
+                "latency_ms": latency_ms,
+            }
+        )
 
     async def _connect_server(self, agent: Manus, server: Any) -> bool:
         try:
@@ -638,8 +808,11 @@ class RuntimeMcpRouter:
             if self._should_connect_server(prompt, server):
                 selected_servers.append(server)
 
+        ranked_scores: dict[str, int] = {}
+        ranked_candidate_ids: list[str] = []
         if selected_servers:
-            ranked_servers = self._rank_selected_servers(prompt, selected_servers)
+            ranked_servers, ranked_scores = self._rank_selected_servers_with_scores(prompt, selected_servers)
+            ranked_candidate_ids = [self._normalize_text(server.serverId) for server in ranked_servers]
             if [s.serverId for s in ranked_servers] != [s.serverId for s in selected_servers]:
                 logger.info(
                     "MCP routing ranked matches by intent: "
@@ -670,6 +843,22 @@ class RuntimeMcpRouter:
             connected = await self._connect_server(agent, server)
             if connected:
                 connected_server_ids.append(server.serverId)
+
+        self._record_routing_event(
+            {
+                "event_type": "decision",
+                "prompt_hash": self._hash_prompt(prompt_text),
+                "intent": intent,
+                "selected_server_id": (
+                    self._normalize_text(selected_servers[0].serverId)
+                    if selected_servers
+                    else None
+                ),
+                "candidate_servers": ranked_candidate_ids,
+                "scores": ranked_scores,
+                "connected_servers": [self._normalize_text(sid) for sid in connected_server_ids],
+            }
+        )
 
         # Treat MCP terminate tools as special finish tools to avoid max-step loops.
         remote_terminate_tools = [

@@ -12,8 +12,10 @@ from psycopg.rows import dict_row
 from bff.domain.models import (
     MessageRecord,
     McpDiscoveredTool,
+    McpRoutingPolicyRecord,
     McpServerRecord,
     SessionRecord,
+    new_id,
     now_iso,
 )
 from bff.utils.memory_settings import chat_session_store_path
@@ -29,6 +31,8 @@ class InMemoryStore:
     """
     sessions: dict[str, SessionRecord] = field(default_factory=dict)
     mcp_servers: dict[str, McpServerRecord] = field(default_factory=dict)
+    mcp_routing_policies: dict[str, McpRoutingPolicyRecord] = field(default_factory=dict)
+    mcp_routing_events: list[dict[str, object]] = field(default_factory=list)
     enable_persistence: bool = True
     persistence_path: str | None = None
     _persist_lock: RLock = field(default_factory=RLock, init=False, repr=False)
@@ -94,11 +98,31 @@ class InMemoryStore:
         # In-memory/json mode does not persist MCP servers at store layer.
         return
 
+    def get_mcp_routing_policy(
+        self, intent: str, server_id: str
+    ) -> McpRoutingPolicyRecord | None:
+        key_exact = f"{(intent or '').strip().lower()}:{(server_id or '').strip().lower()}"
+        policy = self.mcp_routing_policies.get(key_exact)
+        if policy is not None:
+            return policy
+        key_wildcard = f"*:{(server_id or '').strip().lower()}"
+        return self.mcp_routing_policies.get(key_wildcard)
+
+    def record_mcp_routing_event(self, payload: dict[str, object]) -> None:
+        event = dict(payload or {})
+        event.setdefault("id", new_id())
+        event.setdefault("createdAt", now_iso())
+        self.mcp_routing_events.append(event)
+        # Keep a bounded in-memory ring to avoid unbounded growth.
+        if len(self.mcp_routing_events) > 2000:
+            self.mcp_routing_events = self.mcp_routing_events[-2000:]
+
 
 @dataclass
 class PostgresStore:
     sessions: dict[str, SessionRecord] = field(default_factory=dict)
     mcp_servers: dict[str, McpServerRecord] = field(default_factory=dict)
+    mcp_routing_policies: dict[str, McpRoutingPolicyRecord] = field(default_factory=dict)
     database_url: str = ""
     _persist_lock: RLock = field(default_factory=RLock, init=False, repr=False)
 
@@ -106,6 +130,7 @@ class PostgresStore:
         self._init_schema()
         self._load_sessions()
         self._load_mcp_servers()
+        self._load_mcp_routing_policies()
         if not self.sessions:
             self._bootstrap_from_json_snapshot()
 
@@ -169,6 +194,42 @@ class PostgresStore:
                 )
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_chat_messages_session_created ON chat_messages(session_id, created_at)"
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS runtime_mcp_routing_policies (
+                        intent TEXT NOT NULL,
+                        server_id TEXT NOT NULL,
+                        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                        score_bias INTEGER NOT NULL DEFAULT 0,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (intent, server_id)
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS runtime_mcp_routing_events (
+                        id TEXT PRIMARY KEY,
+                        event_type TEXT NOT NULL DEFAULT 'decision',
+                        prompt_hash TEXT NOT NULL,
+                        intent TEXT NOT NULL,
+                        selected_server_id TEXT,
+                        candidate_servers_json TEXT NOT NULL DEFAULT '[]',
+                        scores_json TEXT NOT NULL DEFAULT '{}',
+                        connected_servers_json TEXT NOT NULL DEFAULT '[]',
+                        used_servers_json TEXT NOT NULL DEFAULT '[]',
+                        success BOOLEAN,
+                        latency_ms INTEGER,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_runtime_mcp_routing_events_created ON runtime_mcp_routing_events(created_at)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_runtime_mcp_routing_events_intent_server ON runtime_mcp_routing_events(intent, selected_server_id)"
                 )
             conn.commit()
 
@@ -300,6 +361,37 @@ class PostgresStore:
                 continue
 
         self.mcp_servers.update(loaded)
+
+    def _load_mcp_routing_policies(self) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT intent, server_id, enabled, score_bias, updated_at
+                    FROM runtime_mcp_routing_policies
+                    ORDER BY intent ASC, server_id ASC
+                    """
+                )
+                rows = cur.fetchall()
+
+        loaded: dict[str, McpRoutingPolicyRecord] = {}
+        for row in rows:
+            try:
+                intent = str(row["intent"] or "").strip().lower()
+                server_id = str(row["server_id"] or "").strip().lower()
+                if not intent or not server_id:
+                    continue
+                policy = McpRoutingPolicyRecord(
+                    intent=intent,
+                    serverId=server_id,
+                    enabled=bool(row["enabled"]),
+                    scoreBias=int(row["score_bias"] or 0),
+                    updatedAt=str(row["updated_at"] or now_iso()),
+                )
+                loaded[f"{intent}:{server_id}"] = policy
+            except Exception:
+                continue
+        self.mcp_routing_policies.update(loaded)
 
     def _bootstrap_from_json_snapshot(self) -> None:
         state_path = chat_session_store_path(None)
@@ -452,6 +544,79 @@ class PostgresStore:
                             ),
                         )
                 conn.commit()
+
+    def get_mcp_routing_policy(
+        self, intent: str, server_id: str
+    ) -> McpRoutingPolicyRecord | None:
+        normalized_intent = (intent or "").strip().lower()
+        normalized_server_id = (server_id or "").strip().lower()
+        if not normalized_server_id:
+            return None
+        exact = self.mcp_routing_policies.get(f"{normalized_intent}:{normalized_server_id}")
+        if exact is not None:
+            return exact
+        return self.mcp_routing_policies.get(f"*:{normalized_server_id}")
+
+    def record_mcp_routing_event(self, payload: dict[str, object]) -> None:
+        event = dict(payload or {})
+        event_id = str(event.get("id") or new_id())
+        event_type = str(event.get("event_type") or "decision")
+        prompt_hash = str(event.get("prompt_hash") or "")
+        intent = str(event.get("intent") or "")
+        if not prompt_hash or not intent:
+            return
+
+        selected_server_id = event.get("selected_server_id")
+        latency_value = event.get("latency_ms")
+        try:
+            latency_ms = int(latency_value) if latency_value is not None else None
+        except Exception:
+            latency_ms = None
+        success_value = event.get("success")
+        success = bool(success_value) if success_value is not None else None
+
+        candidate_servers = event.get("candidate_servers") or []
+        scores = event.get("scores") or {}
+        connected_servers = event.get("connected_servers") or []
+        used_servers = event.get("used_servers") or []
+        created_at = str(event.get("created_at") or now_iso())
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO runtime_mcp_routing_events (
+                        id,
+                        event_type,
+                        prompt_hash,
+                        intent,
+                        selected_server_id,
+                        candidate_servers_json,
+                        scores_json,
+                        connected_servers_json,
+                        used_servers_json,
+                        success,
+                        latency_ms,
+                        created_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        event_id,
+                        event_type,
+                        prompt_hash,
+                        intent,
+                        str(selected_server_id) if selected_server_id is not None else None,
+                        json.dumps(candidate_servers, ensure_ascii=False),
+                        json.dumps(scores, ensure_ascii=False),
+                        json.dumps(connected_servers, ensure_ascii=False),
+                        json.dumps(used_servers, ensure_ascii=False),
+                        success,
+                        latency_ms,
+                        created_at,
+                    ),
+                )
+            conn.commit()
 
 
 def create_store() -> InMemoryStore | PostgresStore:

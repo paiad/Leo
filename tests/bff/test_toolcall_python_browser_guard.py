@@ -20,10 +20,23 @@ class _DummyTrendRadarTool(BaseTool):
         return {"ok": True, "items": []}
 
 
+class _DummyEditorTool(BaseTool):
+    name: str = "str_replace_editor"
+    description: str = "dummy editor"
+    parameters: dict = {}
+
+    async def execute(self, **kwargs):
+        return {"ok": True}
+
+
 class _GuardedAgentWithTrendRadar(ToolCallAgent):
     available_tools: ToolCollection = ToolCollection(
         PythonExecute(), _DummyTrendRadarTool()
     )
+
+
+class _GuardedAgentWithEditor(ToolCallAgent):
+    available_tools: ToolCollection = ToolCollection(_DummyEditorTool())
 
 
 @pytest.mark.asyncio
@@ -113,3 +126,37 @@ async def test_allow_python_execute_news_scraping_when_user_explicitly_requests_
 
     result = await agent.execute_tool(call)
     assert result.startswith("Observed output of cmd `python_execute` executed:")
+
+
+@pytest.mark.asyncio
+async def test_block_str_replace_editor_for_browser_task():
+    agent = _GuardedAgentWithEditor()
+    agent.memory.add_message(Message.user_message("打开B站并播放周杰伦稻香"))
+    call = ToolCall(
+        id="6",
+        function=Function(
+            name="str_replace_editor",
+            arguments='{"command":"view","path":"E:\\\\Github\\\\OpenManus\\\\workspace"}',
+        ),
+    )
+
+    result = await agent.execute_tool(call)
+    assert result.startswith("Error:")
+    assert "Policy blocked `str_replace_editor` for browser automation tasks" in result
+    assert "mcp_playwright_browser_navigate" in result
+
+
+@pytest.mark.asyncio
+async def test_allow_str_replace_editor_when_user_requests_file_operation():
+    agent = _GuardedAgentWithEditor()
+    agent.memory.add_message(Message.user_message("请查看 workspace 目录文件结构"))
+    call = ToolCall(
+        id="7",
+        function=Function(
+            name="str_replace_editor",
+            arguments='{"command":"view","path":"E:\\\\Github\\\\OpenManus\\\\workspace"}',
+        ),
+    )
+
+    result = await agent.execute_tool(call)
+    assert result.startswith("Observed output of cmd `str_replace_editor` executed:")

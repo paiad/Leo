@@ -50,7 +50,7 @@ async def delete_session_message(session_id: str, message_id: str) -> dict:
 
 @router.delete('/sessions/{session_id}/messages')
 async def clear_session_messages(session_id: str) -> dict:
-    deleted_count = chat_service.clear_session_messages(session_id)
+    deleted_count = await chat_service.clear_session_messages(session_id)
     if deleted_count is None:
         raise HTTPException(status_code=404, detail=err('会话不存在'))
     return ok({'deletedCount': deleted_count})

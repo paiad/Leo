@@ -95,6 +95,14 @@ class McpServerUpdate(BaseModel):
     enabled: bool | None = None
 
 
+class McpRoutingPolicyRecord(BaseModel):
+    intent: str
+    serverId: str
+    enabled: bool = True
+    scoreBias: int = 0
+    updatedAt: str = Field(default_factory=now_iso)
+
+
 class WorkspaceModelCreate(BaseModel):
     name: str
     provider: str
