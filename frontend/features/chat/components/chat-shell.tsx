@@ -20,6 +20,8 @@ import { useModelContext } from "@/features/models/context/model-context";
 const CHAT_BROWSER_SESSION_STORAGE_KEY = "leo.chat.sessionId.browser";
 const CHAT_LARK_SESSION_STORAGE_KEY = "leo.chat.sessionId.lark";
 const CHAT_ACTIVE_SOURCE_STORAGE_KEY = "leo.chat.activeSource";
+const SUCCESS_NOTICE_AUTO_DISMISS_MS = 3000;
+const ERROR_NOTICE_AUTO_DISMISS_MS = 5000;
 const DEFAULT_PLATFORM_SYSTEM_PROMPT =
   "你是 Leo，AI Agent 工作台助手。你的目标是帮助用户在同一平台内完成聊天、工具调用、知识检索、Agent 协作与工作流执行。";
 type ChatSource = "browser" | "lark";
@@ -163,6 +165,28 @@ export function ChatShell() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!requestNotice) {
+      return;
+    }
+    const timeoutMs =
+      requestNotice.type === "success"
+        ? SUCCESS_NOTICE_AUTO_DISMISS_MS
+        : ERROR_NOTICE_AUTO_DISMISS_MS;
+    const timer = window.setTimeout(() => {
+      setRequestNotice((prev) => {
+        if (prev?.text === requestNotice.text && prev?.type === requestNotice.type) {
+          return null;
+        }
+        return prev;
+      });
+    }, timeoutMs);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [requestNotice]);
 
   useEffect(() => {
     let cancelled = false;
