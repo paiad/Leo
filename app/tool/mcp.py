@@ -2,6 +2,7 @@ from contextlib import AsyncExitStack
 from typing import Any, Dict, List, Optional
 import asyncio
 import json
+import re
 from importlib.metadata import version as pkg_version
 from importlib.metadata import PackageNotFoundError
 
@@ -29,6 +30,44 @@ class MCPClientTool(BaseTool):
     session: Optional[ClientSession] = None
     server_id: str = ""  # Add server identifier
     original_name: str = ""
+
+    @staticmethod
+    def _looks_like_remote_error_text(text: str) -> bool:
+        """
+        Heuristic: some MCP servers return errors as plain text instead of raising.
+        Mark these as ToolResult.error so the agent can retry/fallback.
+        """
+        if not text:
+            return False
+        candidate = str(text).strip()
+        if not candidate:
+            return False
+
+        lowered = candidate.lower()
+        # Common short prefixes produced by MCP servers / HTTP clients (axios/fetch/etc.).
+        if lowered.startswith(
+            (
+                "error:",
+                "error ",
+                "search error",
+                "request failed",
+                "axioserror",
+                "traceback",
+                "exception",
+                "http error",
+            )
+        ):
+            return True
+
+        # Common "status code xxx" patterns.
+        if "status code" in lowered and re.search(r"\bstatus code\s*[=:]?\s*\d{3}\b", lowered):
+            return True
+
+        # Some servers include the numeric code first.
+        if re.match(r"^\s*(4\d\d|5\d\d)\b", lowered):
+            return True
+
+        return False
 
     @staticmethod
     def _infer_expected_types(schema: dict[str, Any] | None) -> set[str]:
@@ -111,7 +150,10 @@ class MCPClientTool(BaseTool):
             content_str = ", ".join(
                 item.text for item in result.content if isinstance(item, TextContent)
             )
-            return ToolResult(output=content_str or "No output returned.")
+            output_text = content_str or "No output returned."
+            if self._looks_like_remote_error_text(output_text):
+                return ToolResult(error=output_text)
+            return ToolResult(output=output_text)
         except Exception as e:
             return ToolResult(error=f"Error executing tool: {str(e)}")
 
