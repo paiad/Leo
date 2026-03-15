@@ -275,7 +275,11 @@ class PostgresStore:
                 record = McpServerRecord(
                     serverId=str(row["server_id"]),
                     name=str(row["name"]),
-                    type=str(row["type"]) if row["type"] in {"stdio", "sse", "http"} else "stdio",
+                    type=(
+                        str(row["type"])
+                        if row["type"] in {"stdio", "sse", "http", "streamablehttp"}
+                        else "stdio"
+                    ),
                     command=row["command"],
                     args=args if isinstance(args, list) else [],
                     env=env if isinstance(env, dict) else {},

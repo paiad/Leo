@@ -100,7 +100,11 @@ class ToolingService:
                 self._store.mcp_servers[normalized_id] = McpServerRecord(
                     serverId=normalized_id,
                     name=normalized_id,
-                    type=("sse" if server_cfg.type == "sse" else "stdio"),
+                    type=(
+                        server_cfg.type
+                        if server_cfg.type in {"stdio", "sse", "http", "streamablehttp"}
+                        else "stdio"
+                    ),
                     command=server_cfg.command,
                     args=server_cfg.args,
                     env=self._normalize_env(getattr(server_cfg, "env", {})),
@@ -179,6 +183,20 @@ class ToolingService:
                 normalized[key] = str(env_value)
         return normalized
 
+    @classmethod
+    def _normalize_connection_meta(
+        cls,
+        env_value: Any,
+        headers_value: Any,
+    ) -> dict[str, str]:
+        # Keep a single persisted dict field for backward compatibility:
+        # - stdio uses it as env
+        # - http/sse/streamablehttp use it as headers
+        merged: dict[str, str] = {}
+        merged.update(cls._normalize_env(headers_value))
+        merged.update(cls._normalize_env(env_value))
+        return merged
+
     def _load_state_file(self) -> None:
         if not self._state_file.exists():
             return
@@ -196,7 +214,7 @@ class ToolingService:
                         continue
 
                 server_type = item.get("type", "stdio")
-                if server_type not in {"stdio", "sse", "http"}:
+                if server_type not in {"stdio", "sse", "http", "streamablehttp"}:
                     server_type = "stdio"
 
                 name = item.get("name") or normalized_id
@@ -212,7 +230,10 @@ class ToolingService:
                     type=server_type,
                     command=item.get("command"),
                     args=item.get("args", []),
-                    env=self._normalize_env(item.get("env", {})),
+                    env=self._normalize_connection_meta(
+                        item.get("env", {}),
+                        item.get("headers", {}),
+                    ),
                     url=item.get("url"),
                     description=description,
                     enabled=bool(item.get("enabled", True)),
@@ -359,11 +380,22 @@ class ToolingService:
                     record.serverId,
                     env=record.env or None,
                 )
+            elif record.type == "streamablehttp":
+                if not record.url:
+                    raise ValueError("streamablehttp MCP 需要 url")
+                await clients.connect_streamable_http(
+                    record.url,
+                    record.serverId,
+                    headers=record.env or None,
+                )
             else:
-                # Treat http as sse endpoint for current MCP client capability.
                 if not record.url:
                     raise ValueError("sse/http MCP 需要 url")
-                await clients.connect_sse(record.url, record.serverId)
+                await clients.connect_sse(
+                    record.url,
+                    record.serverId,
+                    headers=record.env or None,
+                )
 
             response = await clients.list_tools()
             discovered_tools = [

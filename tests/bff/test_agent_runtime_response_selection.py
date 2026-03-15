@@ -9,6 +9,18 @@ def _assistant(content: str, *, with_tool_calls: bool) -> SimpleNamespace:
     return SimpleNamespace(role=role, content=content, tool_calls=tool_calls)
 
 
+def _assistant_with_tool_names(content: str, tool_names: list[str]) -> SimpleNamespace:
+    role = SimpleNamespace(value="assistant")
+    tool_calls = [
+        SimpleNamespace(
+            id=f"call_{idx}",
+            function=SimpleNamespace(name=name),
+        )
+        for idx, name in enumerate(tool_names, start=1)
+    ]
+    return SimpleNamespace(role=role, content=content, tool_calls=tool_calls)
+
+
 def _tool(content: str) -> SimpleNamespace:
     role = SimpleNamespace(value="tool")
     return SimpleNamespace(role=role, content=content, tool_calls=None)
@@ -40,3 +52,18 @@ def test_select_final_assistant_returns_none_when_no_assistant_content():
     ]
 
     assert ManusRuntime._select_final_assistant_text(messages) is None
+
+
+def test_select_final_assistant_accepts_terminate_only_assistant_message():
+    messages = [
+        _assistant_with_tool_names(
+            "天气查询完成：今天开封 3°C~13°C，局部多云。",
+            ["terminate"],
+        ),
+        _tool("Observed output of cmd `terminate` executed: success"),
+    ]
+
+    assert (
+        ManusRuntime._select_final_assistant_text(messages)
+        == "天气查询完成：今天开封 3°C~13°C，局部多云。"
+    )

@@ -30,8 +30,13 @@ class MCPRunner:
                 command=sys.executable,
                 args=["-m", self.server_reference],
             )
-        else:  # sse
+        elif connection_type == "sse":
             await self.agent.initialize(connection_type="sse", server_url=server_url)
+        else:
+            await self.agent.initialize(
+                connection_type="streamablehttp",
+                server_url=server_url,
+            )
 
         logger.info(f"Connected to MCP server via {connection_type}")
 
@@ -72,9 +77,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--connection",
         "-c",
-        choices=["stdio", "sse"],
+        choices=["stdio", "sse", "streamablehttp"],
         default="stdio",
-        help="Connection type: stdio or sse",
+        help="Connection type: stdio, sse, or streamablehttp",
     )
     parser.add_argument(
         "--server-url",

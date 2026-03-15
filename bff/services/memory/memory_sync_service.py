@@ -70,10 +70,22 @@ class MemorySyncService:
                     server_id=server.serverId,
                     env=server.env or None,
                 )
+            elif server.type == "streamablehttp":
+                if not server.url:
+                    return
+                await clients.connect_streamable_http(
+                    server.url,
+                    server.serverId,
+                    headers=server.env or None,
+                )
             else:
                 if not server.url:
                     return
-                await clients.connect_sse(server.url, server.serverId)
+                await clients.connect_sse(
+                    server.url,
+                    server.serverId,
+                    headers=server.env or None,
+                )
 
             session = clients.sessions.get(server.serverId)
             if session is None:

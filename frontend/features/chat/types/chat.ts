@@ -19,7 +19,7 @@ export type ChatTimelineEvent = {
   status?: "running" | "success" | "failed";
 };
 
-export type ChatToolTransportType = "stdio" | "http" | "sse";
+export type ChatToolTransportType = "stdio" | "http" | "sse" | "streamablehttp";
 
 export type ChatMcpCatalogItem = {
   toolId: string;

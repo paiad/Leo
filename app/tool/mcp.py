@@ -2,11 +2,21 @@ from contextlib import AsyncExitStack
 from typing import Any, Dict, List, Optional
 import asyncio
 import json
+from importlib.metadata import version as pkg_version
+from importlib.metadata import PackageNotFoundError
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.types import ListToolsResult, TextContent
+
+try:
+    from mcp.client.streamable_http import streamable_http_client
+except Exception:
+    try:
+        from mcp.client.streamable_http import streamablehttp_client as streamable_http_client
+    except Exception:
+        streamable_http_client = None
 
 from app.logger import logger
 from app.tool.base import BaseTool, ToolResult
@@ -192,7 +202,12 @@ class MCPClients(ToolCollection):
         while task.cancelling():
             task.uncancel()
 
-    async def connect_sse(self, server_url: str, server_id: str = "") -> None:
+    async def connect_sse(
+        self,
+        server_url: str,
+        server_id: str = "",
+        headers: Optional[Dict[str, str]] = None,
+    ) -> None:
         """Connect to an MCP server using SSE transport."""
         if not server_url:
             raise ValueError("Server URL is required.")
@@ -206,9 +221,50 @@ class MCPClients(ToolCollection):
         exit_stack = AsyncExitStack()
         self.exit_stacks[server_id] = exit_stack
 
-        streams_context = sse_client(url=server_url)
+        streams_context = sse_client(url=server_url, headers=headers or None)
         streams = await exit_stack.enter_async_context(streams_context)
         session = await exit_stack.enter_async_context(ClientSession(*streams))
+        self.sessions[server_id] = session
+        self._mark_connected(server_id)
+
+        await self._initialize_and_list_tools(server_id)
+
+    async def connect_streamable_http(
+        self,
+        server_url: str,
+        server_id: str = "",
+        headers: Optional[Dict[str, str]] = None,
+    ) -> None:
+        """Connect to an MCP server using Streamable HTTP transport."""
+        if not server_url:
+            raise ValueError("Server URL is required.")
+        if streamable_http_client is None:
+            try:
+                current_version = pkg_version("mcp")
+            except PackageNotFoundError:
+                current_version = "unknown"
+            raise ValueError(
+                "当前安装的 mcp 包不支持 streamablehttp 传输。"
+                f"当前版本: {current_version}。"
+                "请升级 mcp 到支持 mcp.client.streamable_http 的版本。"
+            )
+
+        server_id = server_id or server_url
+
+        if server_id in self.sessions:
+            await self.disconnect(server_id)
+
+        exit_stack = AsyncExitStack()
+        self.exit_stacks[server_id] = exit_stack
+
+        streams_context = streamable_http_client(url=server_url, headers=headers or None)
+        streams = await exit_stack.enter_async_context(streams_context)
+        # streamablehttp_client may yield (read, write, get_session_id_callback)
+        # while ClientSession only accepts (read, write, ...optional callbacks/timeouts).
+        if not isinstance(streams, tuple) or len(streams) < 2:
+            raise ValueError("streamablehttp transport returned invalid stream handles")
+        read, write = streams[0], streams[1]
+        session = await exit_stack.enter_async_context(ClientSession(read, write))
         self.sessions[server_id] = session
         self._mark_connected(server_id)
 

@@ -127,11 +127,21 @@ class DaytonaSettings(BaseModel):
 class MCPServerConfig(BaseModel):
     """Configuration for a single MCP server"""
 
-    type: str = Field(..., description="Server connection type (sse or stdio)")
-    url: Optional[str] = Field(None, description="Server URL for SSE connections")
+    type: str = Field(
+        ...,
+        description="Server connection type (stdio/sse/http/streamablehttp)",
+    )
+    url: Optional[str] = Field(
+        None,
+        description="Server URL for SSE/HTTP/streamable HTTP connections",
+    )
     command: Optional[str] = Field(None, description="Command for stdio connections")
     args: List[str] = Field(
         default_factory=list, description="Arguments for stdio command"
+    )
+    env: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Process env for stdio (or connection metadata for http-based transports)",
     )
 
 
@@ -160,11 +170,31 @@ class MCPSettings(BaseModel):
                 servers = {}
 
                 for server_id, server_config in data.get("mcpServers", {}).items():
+                    env_data = server_config.get("env", {})
+                    headers_data = server_config.get("headers", {})
+                    merged_env: Dict[str, str] = {}
+                    if isinstance(headers_data, dict):
+                        merged_env.update(
+                            {
+                                str(k): str(v)
+                                for k, v in headers_data.items()
+                                if isinstance(k, str)
+                            }
+                        )
+                    if isinstance(env_data, dict):
+                        merged_env.update(
+                            {
+                                str(k): str(v)
+                                for k, v in env_data.items()
+                                if isinstance(k, str)
+                            }
+                        )
                     servers[server_id] = MCPServerConfig(
                         type=server_config["type"],
                         url=server_config.get("url"),
                         command=server_config.get("command"),
                         args=server_config.get("args", []),
+                        env=merged_env,
                     )
                 return servers
         except Exception as e:

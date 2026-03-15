@@ -91,9 +91,18 @@ class Manus(ToolCallAgent):
         """Initialize connections to configured MCP servers."""
         for server_id, server_config in config.mcp_config.servers.items():
             try:
-                if server_config.type == "sse":
+                if server_config.type in {"sse", "http", "streamablehttp"}:
                     if server_config.url:
-                        await self.connect_mcp_server(server_config.url, server_id)
+                        await self.connect_mcp_server(
+                            server_config.url,
+                            server_id,
+                            connection_type=(
+                                "streamablehttp"
+                                if server_config.type == "streamablehttp"
+                                else "sse"
+                            ),
+                            http_headers=getattr(server_config, "env", None),
+                        )
                         logger.info(
                             f"Connected to MCP server {server_id} at {server_config.url}"
                         )
@@ -119,6 +128,8 @@ class Manus(ToolCallAgent):
         use_stdio: bool = False,
         stdio_args: List[str] = None,
         stdio_env: Optional[Dict[str, str]] = None,
+        connection_type: str = "sse",
+        http_headers: Optional[Dict[str, str]] = None,
     ) -> None:
         """Connect to an MCP server and add its tools."""
         connection_key = server_id or server_url
@@ -134,7 +145,18 @@ class Manus(ToolCallAgent):
             )
             self.connected_servers[connection_key] = server_url
         else:
-            await self.mcp_clients.connect_sse(server_url, server_id)
+            if connection_type == "streamablehttp":
+                await self.mcp_clients.connect_streamable_http(
+                    server_url,
+                    server_id,
+                    headers=http_headers,
+                )
+            else:
+                await self.mcp_clients.connect_sse(
+                    server_url,
+                    server_id,
+                    headers=http_headers,
+                )
             self.connected_servers[connection_key] = server_url
 
         # Update available tools with only the new tools from this server

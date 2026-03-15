@@ -28,7 +28,7 @@ class MCPAgent(ToolCallAgent):
     available_tools: MCPClients = None  # Will be set in initialize()
 
     max_steps: int = 20
-    connection_type: str = "stdio"  # "stdio" or "sse"
+    connection_type: str = "stdio"  # "stdio" | "sse" | "streamablehttp"
 
     # Track tool schemas to detect changes
     tool_schemas: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
@@ -47,8 +47,8 @@ class MCPAgent(ToolCallAgent):
         """Initialize the MCP connection.
 
         Args:
-            connection_type: Type of connection to use ("stdio" or "sse")
-            server_url: URL of the MCP server (for SSE connection)
+            connection_type: Type of connection to use ("stdio", "sse" or "streamablehttp")
+            server_url: URL of the MCP server (for SSE/streamable HTTP connection)
             command: Command to run (for stdio connection)
             args: Arguments for the command (for stdio connection)
         """
@@ -60,6 +60,10 @@ class MCPAgent(ToolCallAgent):
             if not server_url:
                 raise ValueError("Server URL is required for SSE connection")
             await self.mcp_clients.connect_sse(server_url=server_url)
+        elif self.connection_type == "streamablehttp":
+            if not server_url:
+                raise ValueError("Server URL is required for Streamable HTTP connection")
+            await self.mcp_clients.connect_streamable_http(server_url=server_url)
         elif self.connection_type == "stdio":
             if not command:
                 raise ValueError("Command is required for stdio connection")

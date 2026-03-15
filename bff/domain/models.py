@@ -60,7 +60,7 @@ class McpDiscoveredTool(BaseModel):
 class McpServerRecord(BaseModel):
     serverId: str
     name: str
-    type: Literal["stdio", "http", "sse"]
+    type: Literal["stdio", "http", "sse", "streamablehttp"]
     command: str | None = None
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
@@ -73,7 +73,7 @@ class McpServerRecord(BaseModel):
 class McpServerCreate(BaseModel):
     serverId: str | None = None
     name: str | None = None
-    type: Literal["stdio", "http", "sse"]
+    type: Literal["stdio", "http", "sse", "streamablehttp"]
     command: str | None = None
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
@@ -84,7 +84,7 @@ class McpServerCreate(BaseModel):
 
 class McpServerUpdate(BaseModel):
     name: str | None = None
-    type: Literal["stdio", "http", "sse"] | None = None
+    type: Literal["stdio", "http", "sse", "streamablehttp"] | None = None
     command: str | None = None
     args: list[str] | None = None
     env: dict[str, str] | None = None

@@ -19,6 +19,7 @@ class RuntimeMcpRouter:
         "stdio",
         "sse",
         "http",
+        "streamablehttp",
     }
     _RAG_QA_HINTS = {
         "什么是",
@@ -314,10 +315,21 @@ class RuntimeMcpRouter:
                 return True
             if not server.url:
                 return False
+            if server.type == "streamablehttp":
+                await agent.connect_mcp_server(
+                    server.url,
+                    server_id=server.serverId,
+                    use_stdio=False,
+                    connection_type="streamablehttp",
+                    http_headers=server.env or None,
+                )
+                return True
             await agent.connect_mcp_server(
                 server.url,
                 server_id=server.serverId,
                 use_stdio=False,
+                connection_type="sse",
+                http_headers=server.env or None,
             )
             return True
         except Exception as exc:

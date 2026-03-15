@@ -37,6 +37,7 @@ type RawMcpServerConfig = {
   command?: string;
   args?: unknown;
   env?: unknown;
+  headers?: unknown;
   url?: string;
   description?: string;
   enabled?: boolean;
@@ -53,7 +54,7 @@ const MCP_PURPOSE_ZH: Record<string, string> = {
 };
 
 function isTransportType(value: unknown): value is ChatToolTransportType {
-  return value === "stdio" || value === "http" || value === "sse";
+  return value === "stdio" || value === "http" || value === "sse" || value === "streamablehttp";
 }
 
 function ensureObject(value: unknown, message: string): Record<string, unknown> {
@@ -63,13 +64,26 @@ function ensureObject(value: unknown, message: string): Record<string, unknown> 
   return value as Record<string, unknown>;
 }
 
+function normalizeStringMap(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const normalized = Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).filter(
+      (entry): entry is [string, string] =>
+        typeof entry[0] === "string" && typeof entry[1] === "string",
+    ),
+  );
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
 function normalizeServerConfig(
   fallbackServerId: string,
   raw: RawMcpServerConfig,
 ): CreateMcpServerInput {
   const type = raw.type;
   if (!isTransportType(type)) {
-    throw new Error(`${fallbackServerId}: type 必须是 stdio/http/sse`);
+    throw new Error(`${fallbackServerId}: type 必须是 stdio/http/sse/streamablehttp`);
   }
 
   const serverId = typeof raw.serverId === "string" && raw.serverId.trim() ? raw.serverId.trim() : fallbackServerId;
@@ -77,15 +91,9 @@ function normalizeServerConfig(
   const args = Array.isArray(raw.args)
     ? raw.args.filter((item): item is string => typeof item === "string")
     : [];
-  const env =
-    raw.env && typeof raw.env === "object" && !Array.isArray(raw.env)
-      ? Object.fromEntries(
-          Object.entries(raw.env as Record<string, unknown>).filter(
-            (entry): entry is [string, string] =>
-              typeof entry[0] === "string" && typeof entry[1] === "string",
-          ),
-        )
-      : undefined;
+  const parsedEnv = normalizeStringMap(raw.env);
+  const parsedHeaders = normalizeStringMap(raw.headers);
+  const env = parsedEnv || parsedHeaders ? { ...(parsedHeaders ?? {}), ...(parsedEnv ?? {}) } : undefined;
 
   return {
     serverId,
@@ -354,7 +362,7 @@ export function McpManager() {
                   ) : null}
                   {server.env && Object.keys(server.env).length > 0 ? (
                     <p className="mt-2 text-xs text-slate-600">
-                      env keys: {Object.keys(server.env).join(", ")}
+                      {server.type === "stdio" ? "env keys" : "headers/env keys"}: {Object.keys(server.env).join(", ")}
                     </p>
                   ) : null}
                   {server.description ? (
