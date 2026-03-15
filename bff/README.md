@@ -122,5 +122,30 @@ FEISHU_REPLY_ONLY_WHEN_MENTIONED=true
 - 支持 `url_verification`（返回 `challenge`）。
 - 监听 `im.message.receive_v1` 并调用 OpenManus ChatService。
 - 使用 `message_id` 做去重，避免重复推送导致重复回复。
-- 默认只处理文本消息；非文本消息会提示“目前仅支持文本消息”。
+- 默认处理文本消息；`audio` 语音消息会尝试本地 ASR（faster-whisper）转写后再交给模型。
+- 未识别成功时，语音消息会提示“语音识别失败，请重试或改发文字。”。
+- 其他非文本消息会提示“目前仅支持文本和语音消息。”。
 - 当前回调适配器未实现 Encrypt Key 解密流程，配置飞书事件回调时请先关闭 Encrypt Key（明文回调模式）。
+
+### 本地语音识别（faster-whisper）
+
+可选环境变量（均有默认值）：
+
+```bash
+# 是否启用语音消息 ASR
+FEISHU_ENABLE_AUDIO_ASR=true
+# 3050Ti 4G 推荐 small
+FEISHU_AUDIO_ASR_MODEL=small
+# 设备: cuda / cpu（默认 cuda，失败自动回退 cpu）
+FEISHU_AUDIO_ASR_DEVICE=cuda
+# 计算类型（可按硬件调整）
+FEISHU_AUDIO_ASR_COMPUTE_TYPE_CUDA=int8_float16
+FEISHU_AUDIO_ASR_COMPUTE_TYPE_CPU=int8
+# 语音识别语言，中文可设 zh
+FEISHU_AUDIO_ASR_LANGUAGE=zh
+```
+
+依赖：
+
+- Python 包：`faster-whisper`
+- 系统命令：`ffmpeg`（用于将飞书音频转成 16k mono wav）
