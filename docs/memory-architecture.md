@@ -32,7 +32,7 @@
 - `BFF_MEMORY_SYNC_ENABLED`:
   `1/true/yes/on` enables MCP sync.
 - MCP `memory` server enable switch:
-  `config/mcp.bff.json -> mcpServers.memory.enabled`.
+  `mcpServers.memory.enabled`（Postgres 模式在 DB；非 Postgres 模式在 `config/mcp.bff.json`）。
 
 ## Data Flow
 

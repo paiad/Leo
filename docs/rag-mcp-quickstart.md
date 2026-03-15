@@ -22,15 +22,14 @@ uv run python run_rag_mcp_server.py --transport stdio
 
 ## 3. Register in BFF
 
-1. Copy `config/mcp.bff.example.json` -> `config/mcp.bff.json` if needed.
-2. Enable `rag` server (`"enabled": true`).
-3. Start BFF:
+1. Enable `rag` MCP server in the MCP 管理页（Postgres 模式写入 DB；非 Postgres 模式写入 `config/mcp.bff.json`）。
+2. Start BFF:
 
 ```bash
 uv run python -m uvicorn bff.main:app --host 0.0.0.0 --port 8000
 ```
 
-4. Discover tools:
+3. Discover tools:
 
 ```http
 POST /api/v1/mcp/servers/rag/discover

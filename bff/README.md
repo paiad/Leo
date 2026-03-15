@@ -53,7 +53,7 @@ cd E:\Github\OpenManus
 
 - Chat 调用通过 `ManusRuntime` 适配 `app.agent.manus.Manus`。
 - Session 为内存存储。
-- MCP Server 状态持久化在 `config/mcp.bff.json`。
+- MCP Server 状态：使用 Postgres（`BFF_DATABASE_URL`）时以 DB 为准；否则使用 `config/mcp.bff.json` 作为本地状态文件。
 - `discover` 会真实连接 MCP（`stdio/sse`）并调用 `tools/list`。
 - 默认注入 `leo-local` 模板（`python -m app.mcp.server`，默认禁用）。
 - 已统一错误返回结构：`{ success, data, error }`。

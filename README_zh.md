@@ -101,6 +101,8 @@ uv run python main.py
 uv run python run_mcp.py
 ```
 
+如需让 `Manus` 连接外部 MCP Server（例如 exa/playwright/trendradar 等），请创建 `config/mcp.json`（格式参考 `config/mcp.example.json`）。
+
 如需体验不稳定的多智能体版本，可运行：
 
 ```bash

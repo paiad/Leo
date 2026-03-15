@@ -15,7 +15,7 @@ Leo 不是对 OpenManus 的替代，而是面向业务接入的增强层：
 1. 继承 OpenManus 的智能体内核能力  
 2. 新增 BFF 分层架构与统一 API  
 3. 增加运行时策略（MCP 按需路由、响应收敛、会话管理）  
-4. 增加工程化配置（`.env`、`config/*.toml`、`config/mcp.bff.json`）  
+4. 增加工程化配置（`.env`、`config/*.toml`、（非 Postgres 模式可选）`config/mcp.bff.json`）  
 5. 增加飞书 Webhook/长连接集成能力
 
 ## 核心目录
@@ -47,7 +47,7 @@ Leo 采用分层架构，职责边界如下：
 `app/agent/` + `app/tool/` 提供 OpenManus 核心能力：工具调用、浏览器/文件/代码执行、MCP 客户端连接。
 
 5. 配置与状态层（Config/State）  
-`config/config.toml` 管模型与基础配置，`.env` 管运行时开关与密钥，`config/mcp.bff.json` 管 MCP 服务状态。
+`config/config.toml` 管模型与基础配置，`.env` 管运行时开关与密钥；MCP 服务状态在启用 Postgres（`BFF_DATABASE_URL`）时存 DB，否则存本地状态文件 `config/mcp.bff.json`。
 
 架构链路（详细）：
 
@@ -96,7 +96,7 @@ flowchart LR
     subgraph ConfigState["配置与状态"]
         ENV[.env<br/>运行时开关 / 密钥]
         TOML[config/config.toml<br/>模型与系统配置]
-        MCPJSON[config/mcp.bff.json<br/>MCP 持久化状态]
+        MCPJSON[config/mcp.bff.json（非 Postgres）<br/>MCP 持久化状态]
     end
 
     FE --> AR
@@ -322,7 +322,7 @@ uv sync
 
 1. LLM 配置：复制并编辑 `config/config.toml`
 2. 环境变量：编辑根目录 `.env`（飞书、BFF 运行参数等）
-3. MCP 配置：按需使用 `config/mcp.bff.json`
+3. MCP 配置：启用 Postgres（`BFF_DATABASE_URL`）时走 DB；否则按需使用 `config/mcp.bff.json`
 
 ### 3) 启动方式
 
@@ -335,6 +335,8 @@ uv run python main.py
 ```bash
 uv run python run_mcp.py
 ```
+
+如需让 `Manus` 连接外部 MCP Server（例如 exa/playwright/trendradar 等），请创建 `config/mcp.json`（格式参考 `config/mcp.example.json`）。
 
 - 多智能体 Flow：
 ```bash
@@ -444,7 +446,7 @@ python run_rag_mcp_server.py --transport stdio
 
 1. `config/config.toml`：模型、浏览器、sandbox、runflow 等主配置  
 2. `.env`：运行时开关、飞书密钥、BFF 行为参数  
-3. `config/mcp.bff.json`：MCP 服务状态与工具发现缓存
+3. `config/mcp.bff.json`：MCP 服务状态与工具发现缓存（仅非 Postgres 模式）
 
 ### 环境变量原则
 
@@ -475,7 +477,7 @@ python run_rag_mcp_server.py --transport stdio
   - 首次启用 PostgreSQL 且表为空时，会自动导入 `chat-memory-store.json` 快照
 - 如需自定义会话持久化路径，可在 `.env` 设置：`BFF_CHAT_MEMORY_STORE_PATH=E:\path\chat-memory-store.json`
 - Memory MCP 已提供模板（默认禁用）：`memory`（`@modelcontextprotocol/server-memory`）
-- 启用方式：在前端 MCP 管理或 `config/mcp.bff.json` 中将 `memory.enabled` 设为 `true`
+- 启用方式：在前端 MCP 管理启用（Postgres 模式写 DB；非 Postgres 模式写 `config/mcp.bff.json`）
 - 启用后，BFF 会在每轮问答落库后异步同步一条结构化记忆到 Memory MCP（失败不影响主流程）
 - 可通过 `.env` 开关控制同步：`BFF_MEMORY_SYNC_ENABLED=1`（默认开启）
 - 架构规范见：`docs/memory-architecture.md`

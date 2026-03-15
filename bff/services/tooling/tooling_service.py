@@ -89,8 +89,10 @@ class ToolingService:
         self._bootstrap_mcp_state()
 
     def _bootstrap_mcp_state(self) -> None:
-        # JSON file is used as bootstrap source when DB state is empty, or as fallback backend.
-        if (not self._use_postgres_state) or (not self._store.mcp_servers):
+        # JSON file is used only in non-DB mode. When Postgres is enabled, the DB is the
+        # single source of truth and we never read from `config/mcp.bff.json` to avoid
+        # state drift and confusing "file overrides DB" behavior.
+        if not self._use_postgres_state:
             self._load_state_file()
 
         # Fallback to current config when state file doesn't exist.
