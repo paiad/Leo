@@ -41,6 +41,39 @@ class ToolCallAgent(ReActAgent):
     cleanup_on_run_finish: bool = True
 
     @staticmethod
+    def _env_truthy(name: str, default: str = "0") -> bool:
+        return (os.getenv(name, default) or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    @staticmethod
+    def _env_int(name: str, default: int, minimum: int = 0) -> int:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        try:
+            value = int(raw.strip())
+        except ValueError:
+            return default
+        return max(minimum, value)
+
+    def _format_thought_for_progress(self, content: str) -> str:
+        max_chars = self._env_int("OPENMANUS_STREAM_THOUGHTS_MAX_CHARS", 320, minimum=80)
+        text = str(content or "").strip()
+        if not text:
+            return ""
+        # Keep progress line compact to avoid flooding the UI.
+        text = re.sub(r"\s+", " ", text).strip()
+        if text.endswith(("：", ":")):
+            text = text[:-1] + "。"
+        if len(text) <= max_chars:
+            return text
+        return f"{text[:max_chars]}... [truncated]"
+
+    @staticmethod
     def _truncate_for_log(value: str, max_len: int = 150) -> str:
         text = str(value or "")
         if len(text) <= max_len:
@@ -98,6 +131,22 @@ class ToolCallAgent(ReActAgent):
                 f"🧰 Tools being prepared: {[call.function.name for call in tool_calls]}"
             )
             logger.info(f"🔧 Tool arguments: {tool_calls[0].function.arguments}")
+
+        # Optionally stream the model's "thoughts" (actually: the user-facing planning text)
+        # as a progress event, so the UI can show intermediate status before the final answer.
+        if self._env_truthy("OPENMANUS_STREAM_THOUGHTS", "0") and tool_calls:
+            # Only stream "thinking" when the model is actually planning a tool call.
+            # Avoid emitting the final answer as a "thinking" progress event (common when tool_calls=[]).
+            progress_text = self._format_thought_for_progress(content)
+            if progress_text:
+                await self._emit_event(
+                    {
+                        "type": "progress",
+                        "phase": "thinking",
+                        "message": progress_text,
+                        "step": self.current_step,
+                    }
+                )
 
         try:
             if response is None:
