@@ -475,6 +475,7 @@ class ToolingService:
                 "Prefer user words in keywords and example_queries.",
                 "Keep example_queries realistic (<= 16 items).",
                 "Include common nicknames/synonyms in keywords when applicable.",
+                "For Chinese brands, include common nicknames/abbreviations (e.g. 麦当当 for 麦当劳).",
                 "Do not include secrets, tokens, urls, or commands.",
             ],
         }
