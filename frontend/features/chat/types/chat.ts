@@ -77,3 +77,45 @@ export type ChatDecisionEvent = {
 export type ChatRuntimeConfig = {
   workspacePrompt: string;
 };
+
+export type ChatRoutingEvent = {
+  id?: string;
+  event_type: string;
+  request_preview?: string;
+  prompt_hash?: string;
+  intent?: string;
+  selected_server_id?: string | null;
+  candidate_servers?: string[];
+  connected_servers?: string[];
+  used_servers?: string[];
+  scores?: Record<string, unknown>;
+  success?: boolean | null;
+  latency_ms?: number | null;
+  createdAt?: string;
+};
+
+export type ChatRoutingDashboard = {
+  window: {
+    days: number;
+    sinceIso: string;
+    nowIso: string;
+  };
+  counts: {
+    total: number;
+    byEventType: Record<string, number>;
+  };
+  metrics: {
+    routingAccuracy: number | null;
+    toolSuccessRate: number | null;
+    avgLatencyMs: number | null;
+    fallbackTriggerRate: number | null;
+  };
+  daily: Array<{
+    date: string;
+    requests: number;
+    routingAccuracy: number | null;
+    toolSuccessRate: number | null;
+    avgLatencyMs: number | null;
+    fallbackTriggerRate: number | null;
+  }>;
+};

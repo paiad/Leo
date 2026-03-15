@@ -1,0 +1,21 @@
+id,user_request,expected_servers,expected_tools,multi_step
+1,打开B站并播放周杰伦稻香,playwright,browser_navigate,false
+2,点开这个网页并截图首页,playwright,browser_navigate|browser_take_screenshot,false
+3,帮我填写登录表单,playwright,browser_fill_form,false
+4,搜索抖音今日热点top5,trendradar,get_latest_news|search_news,false
+5,查微博热搜并按热度排序,trendradar,get_latest_news,false
+6,搜今天AI新闻并给出处,exa,web_search,false
+7,给我github仓库最近10次提交,github,list_commits,false
+8,看这个PR改了哪些文件,github,get_pull_request_files,false
+9,创建一个issue标题修复登录超时,github,create_issue,false
+10,什么是RAG,rag,search,false
+11,解释一下向量召回和重排区别,rag,search,false
+12,不要知识库直接回答什么是agent,none,none,false
+13,有哪些MCP工具可用,none,none,false
+14,先查抖音热点再打开B站,trendradar>playwright,search_news>browser_navigate,true
+15,用github查open issues再打开网页看详情,github>playwright,list_issues>browser_navigate,true
+16,帮我检索文档并总结结论,rag,search,false
+17,帮我打开x.com看最新动态,playwright,browser_navigate,false
+18,查一下今天美元指数新闻,exa|trendradar,web_search|search_news,false
+19,查看MCP server配置怎么写,none,none,false
+20,打开美团并搜索汉堡店,playwright,browser_navigate|browser_type,false

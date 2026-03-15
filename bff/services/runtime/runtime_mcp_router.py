@@ -203,6 +203,25 @@ class RuntimeMcpRouter:
             return prompt
         return prompt.rsplit(marker, 1)[-1].strip()
 
+    def current_user_request(self, prompt: str) -> str:
+        return self._extract_current_user_request(prompt)
+
+    def request_preview(self, prompt: str, max_len: int = 180) -> str:
+        return self._request_preview(self.current_user_request(prompt), max_len=max_len)
+
+    @staticmethod
+    def _request_preview(request_text: str, max_len: int = 180) -> str:
+        text = (request_text or "").strip()
+        if not text:
+            return ""
+        compact = " ".join(text.split())
+        if len(compact) <= max_len:
+            return compact
+        return f"{compact[:max_len]}..."
+
+    def normalized_current_user_request(self, prompt: str) -> str:
+        return self._normalize_text(self._extract_current_user_request(prompt))
+
     @staticmethod
     def _tokenize_words(value: str) -> set[str]:
         # Keep simple ASCII word extraction; Chinese relies on substring matching.
@@ -300,6 +319,10 @@ class RuntimeMcpRouter:
             prompt_text
         ) and self._looks_like_strong_browser_action_request(prompt_text)
 
+    def is_mixed_news_and_browser_request(self, prompt: str) -> bool:
+        prompt_text = self.normalized_current_user_request(prompt)
+        return self._looks_like_mixed_news_and_browser_request(prompt_text)
+
     def _classify_intent(self, prompt_text: str) -> IntentType:
         if not prompt_text:
             return "general"
@@ -325,6 +348,10 @@ class RuntimeMcpRouter:
         if any(hint in prompt_text for hint in self._SEARCH_HINTS):
             return "web_search"
         return "general"
+
+    def classify_prompt_intent(self, prompt: str) -> IntentType:
+        prompt_text = self.normalized_current_user_request(prompt)
+        return self._classify_intent(prompt_text)
 
     def _server_explicitly_mentioned(self, prompt_text: str, server: Any) -> bool:
         sid = self._normalize_text(getattr(server, "serverId", ""))
@@ -673,6 +700,9 @@ class RuntimeMcpRouter:
         except Exception as exc:
             logger.warning(f"Failed to persist MCP routing event: {exc}")
 
+    def record_runtime_routing_event(self, payload: dict[str, Any]) -> None:
+        self._record_routing_event(payload)
+
     def record_routing_outcome(
         self,
         *,
@@ -682,7 +712,8 @@ class RuntimeMcpRouter:
         latency_ms: int | None,
         success: bool | None,
     ) -> None:
-        prompt_text = self._normalize_text(self._extract_current_user_request(prompt))
+        request_text = self.current_user_request(prompt)
+        prompt_text = self._normalize_text(request_text)
         if not prompt_text:
             return
         connected = [self._normalize_text(server_id) for server_id in (connected_server_ids or []) if server_id]
@@ -702,6 +733,7 @@ class RuntimeMcpRouter:
                 "used_servers": used_servers,
                 "success": success,
                 "latency_ms": latency_ms,
+                "scores": {"request_preview": self._request_preview(request_text)},
             }
         )
 
@@ -791,7 +823,8 @@ class RuntimeMcpRouter:
     async def connect_enabled_mcp_servers(self, agent: Manus, prompt: str) -> list[str]:
         if not self._store:
             return []
-        prompt_text = self._normalize_text(self._extract_current_user_request(prompt))
+        request_text = self.current_user_request(prompt)
+        prompt_text = self._normalize_text(request_text)
         intent = self._classify_intent(prompt_text)
         logger.info(f"MCP routing intent: {intent}")
 
@@ -855,7 +888,10 @@ class RuntimeMcpRouter:
                     else None
                 ),
                 "candidate_servers": ranked_candidate_ids,
-                "scores": ranked_scores,
+                "scores": {
+                    **ranked_scores,
+                    "request_preview": self._request_preview(request_text),
+                },
                 "connected_servers": [self._normalize_text(sid) for sid in connected_server_ids],
             }
         )

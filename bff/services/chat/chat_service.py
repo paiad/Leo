@@ -228,10 +228,14 @@ class ChatService:
                 high = mid - 1
         return best
 
+    @staticmethod
+    def _current_user_request_block(current_user_text: str) -> str:
+        return f"[Current User Request]\n{current_user_text}"
+
     def _format_history_context(self, session: SessionRecord, current_user_text: str) -> str:
         messages = session.messages
         if not messages:
-            return ""
+            return self._current_user_request_block(current_user_text)
 
         # Current request is appended before runtime invocation; exclude it from history.
         history_messages = messages[:-1] if messages[-1].role == "user" else messages
@@ -241,11 +245,11 @@ class ChatService:
             if message.role in {"user", "assistant"} and (message.content or "").strip()
         ]
         if not relevant_messages:
-            return ""
+            return self._current_user_request_block(current_user_text)
 
         history_budget = self._history_token_budget(current_user_text)
         if history_budget <= 0:
-            return current_user_text
+            return self._current_user_request_block(current_user_text)
 
         message_char_limit = self._env_int("BFF_CHAT_HISTORY_MESSAGE_CHAR_LIMIT", 1200)
         selected_lines_reversed: list[str] = []
@@ -276,7 +280,7 @@ class ChatService:
             used_tokens += line_tokens
 
         if not selected_lines_reversed:
-            return current_user_text
+            return self._current_user_request_block(current_user_text)
 
         selected_lines = list(reversed(selected_lines_reversed))
         header = (
@@ -290,7 +294,8 @@ class ChatService:
             header
             + "\n"
             + "\n".join(selected_lines)
-            + f"\n\n[Current User Request]\n{current_user_text}"
+            + "\n\n"
+            + self._current_user_request_block(current_user_text)
         )
 
     def _build_runtime_prompt(
@@ -302,21 +307,20 @@ class ChatService:
         source: str,
         request_message_id: str | None = None,
     ) -> str:
-        prompt = self.build_prompt(user_text, workspace_prompt)
+        current_request_text = self.build_prompt(user_text, workspace_prompt)
         output_policy = (
             self._build_output_policy_text(source=source, session_id=session.id)
             if self._should_apply_output_policy(user_text)
             else ""
         )
         if output_policy:
-            prompt = f"{prompt}\n\n{output_policy}"
+            current_request_text = f"{current_request_text}\n\n{output_policy}"
 
         context_bundle = self._context_memory.build_context_bundle(
             session_id=session.id,
-            current_user_text=prompt,
+            current_user_text=current_request_text,
         )
         if context_bundle.text:
-            prompt = f"{context_bundle.text}\n\n{prompt}"
             self._context_memory.persist_injection_audit(
                 session_id=session.id,
                 request_message_id=request_message_id,
@@ -324,10 +328,10 @@ class ChatService:
                 bundle=context_bundle,
             )
 
-        history_context = self._format_history_context(session, prompt)
-        if not history_context:
-            return prompt
-        return history_context
+        prompt_with_history = self._format_history_context(session, current_request_text)
+        if context_bundle.text:
+            return f"{context_bundle.text}\n\n{prompt_with_history}"
+        return prompt_with_history
 
     def _source_key(self, source: str) -> str:
         return "lark" if source == "lark" else "browser"

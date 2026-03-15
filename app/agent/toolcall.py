@@ -40,6 +40,13 @@ class ToolCallAgent(ReActAgent):
     max_observe: Optional[Union[int, bool]] = None
     cleanup_on_run_finish: bool = True
 
+    @staticmethod
+    def _truncate_for_log(value: str, max_len: int = 150) -> str:
+        text = str(value or "")
+        if len(text) <= max_len:
+            return text
+        return f"{text[:max_len]}... [truncated]"
+
     async def think(self) -> bool:
         """Process current state and decide next actions using tools"""
         if self.next_step_prompt:
@@ -169,7 +176,11 @@ class ToolCallAgent(ReActAgent):
                 result = result[: self.max_observe]
 
             logger.info(
-                f"🎯 Tool '{command.function.name}' completed its mission! Result: {result}"
+                "🎯 Tool '%s' completed its mission! Result: %s"
+                % (
+                    command.function.name,
+                    self._truncate_for_log(result, max_len=150),
+                )
             )
             await self._emit_event(
                 {

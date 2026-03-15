@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openmanus.local/schemas/mcp-plan.v1.schema.json",
+  "title": "MCP Planner Output v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "need_mcp", "plan_steps", "fallback"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "mcp-plan.v1"
+    },
+    "need_mcp": {
+      "type": "boolean"
+    },
+    "plan_steps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/planStep"
+      }
+    },
+    "fallback": {
+      "$ref": "#/$defs/fallback"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "need_mcp": {
+            "const": true
+          }
+        },
+        "required": ["need_mcp"]
+      },
+      "then": {
+        "properties": {
+          "plan_steps": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "planStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "goal",
+        "server_id",
+        "tool_name",
+        "args_hint",
+        "confidence",
+        "reason"
+      ],
+      "properties": {
+        "goal": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "server_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "tool_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "args_hint": {
+          "type": "object"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      }
+    },
+    "fallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "reason"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["rule_route", "no_mcp", "explain_fail"]
+        },
+        "server_id": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "tool_name": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      }
+    }
+  }
+}

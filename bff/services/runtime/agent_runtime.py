@@ -13,6 +13,7 @@ from bff.services.runtime.runtime_events import RuntimeEventManager
 from bff.services.runtime.runtime_executor import RuntimeExecutor
 from bff.services.runtime.runtime_finalizer import RuntimeFinalizer
 from bff.services.runtime.runtime_mcp_router import RuntimeMcpRouter
+from bff.services.runtime.runtime_planning import RuntimeMcpPlanningOrchestrator
 from bff.services.runtime.runtime_policy import RuntimePolicy, RuntimeStallDetector
 from bff.services.runtime.runtime_progress import RuntimeProgressEmitter
 
@@ -37,11 +38,16 @@ class ManusRuntime:
         self._shared_agent_lock = asyncio.Lock()
 
         self._mcp_router = RuntimeMcpRouter(store)
+        self._planning = RuntimeMcpPlanningOrchestrator(
+            router=self._mcp_router,
+            store=store,
+        )
         self._policy = RuntimePolicy()
         self._events = RuntimeEventManager(RuntimeProgressEmitter())
         self._executor = RuntimeExecutor(
             mcp_router=self._mcp_router,
             policy=self._policy,
+            planning=self._planning,
         )
         self._finalizer = RuntimeFinalizer(self._extract_current_user_request)
 

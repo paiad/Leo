@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from typing import Any
+from typing import Any
 
 
 class RuntimeStallDetector:
@@ -180,32 +181,119 @@ class RuntimePolicy:
         return False
 
     @staticmethod
-    def build_forced_rag_retry_prompt(prompt: str) -> str:
+    def has_server_specific_tool_activity(
+        messages: list[Any], server_id: str, tool_name: str
+    ) -> bool:
+        server = (server_id or "").strip().lower()
+        tool = (tool_name or "").strip().lower()
+        if not server or not tool:
+            return False
+
+        prefix = f"mcp_{server}_"
+        canonical = tool[len(prefix) :] if tool.startswith(prefix) else tool
+        expected_full = f"{prefix}{canonical}"
+
+        for message in messages:
+            role = getattr(message, "role", None)
+            role_value = getattr(role, "value", role)
+            if role_value == "tool":
+                name = str(getattr(message, "name", "") or "").strip().lower()
+                if name == expected_full:
+                    return True
+                continue
+            if role_value != "assistant":
+                continue
+            tool_calls = getattr(message, "tool_calls", None) or []
+            for call in tool_calls:
+                function = getattr(call, "function", None)
+                name = str(getattr(function, "name", "") or "").strip().lower()
+                if name == expected_full:
+                    return True
+        return False
+
+    @staticmethod
+    def build_plan_step_prompt(
+        prompt: str,
+        *,
+        server_id: str,
+        tool_name: str,
+        goal: str,
+        reason: str,
+        step_index: int,
+        total_steps: int,
+        retry: bool = False,
+    ) -> str:
+        sid = (server_id or "").strip().lower()
+        tool = (tool_name or "").strip().lower()
+        forced_tool = tool if tool.startswith(f"mcp_{sid}_") else f"mcp_{sid}_{tool}"
+        retry_line = (
+            "这是同一步骤的重试，请严格调用目标工具并完成该步骤。"
+            if retry
+            else "请先完成本步骤，再继续其他动作。"
+        )
         reminder = (
-            "[Runtime Enforcement]\n"
-            "你必须至少调用一次 mcp_rag_search 工具，再给出最终答复。\n"
-            "调用参数要求：top_k=8, with_rerank=true。\n"
-            "若知识库未命中，请明确说明“知识库未命中”，并给出下一步建议。"
+            "[Runtime Plan Enforcement]\n"
+            f"step={step_index}/{total_steps}\n"
+            f"goal={goal}\n"
+            f"server_id={sid}\n"
+            f"tool_name={tool}\n"
+            f"reason={reason}\n"
+            f"{retry_line}\n"
+            f"必须至少调用一次 `{forced_tool}` 或同一 server 下等价工具后再回复。\n"
         )
         return f"{prompt}\n\n{reminder}"
+
+    @staticmethod
+    def build_forced_server_retry_prompt(
+        prompt: str, *, server_id: str, tool_name: str | None = None
+    ) -> str:
+        sid = (server_id or "").strip().lower()
+        tool = (tool_name or "").strip().lower() if tool_name else ""
+        if sid == "rag":
+            reminder = (
+                "[Runtime Enforcement]\n"
+                "你必须至少调用一次 mcp_rag_search 工具，再给出最终答复。\n"
+                "调用参数要求：top_k=8, with_rerank=true。\n"
+                "若知识库未命中，请明确说明“知识库未命中”，并给出下一步建议。"
+            )
+            return f"{prompt}\n\n{reminder}"
+        if sid == "trendradar":
+            reminder = (
+                "[Runtime Enforcement]\n"
+                "你必须至少调用一次 TrendRadar MCP 工具，再给出最终答复。\n"
+                "优先调用 mcp_trendradar_get_latest_news；\n"
+                "如需关键词检索可调用 mcp_trendradar_search_news。\n"
+                "必须基于 TrendRadar 工具返回的数据作答，不要改用 python_execute 抓网页。"
+            )
+            return f"{prompt}\n\n{reminder}"
+        if sid == "playwright":
+            reminder = (
+                "[Runtime Enforcement]\n"
+                "你必须至少调用一次 Playwright MCP 工具完成网页操作，再给出最终答复。\n"
+                "优先调用 mcp_playwright_browser_navigate，然后按需调用 click/type 等工具。\n"
+                "禁止把网页操作替换为 str_replace_editor 或 python_execute。"
+            )
+            return f"{prompt}\n\n{reminder}"
+
+        expected = f"`mcp_{sid}_{tool}`" if sid and tool else f"`mcp_{sid}_*`"
+        reminder = (
+            "[Runtime Enforcement]\n"
+            f"你必须至少调用一次 {expected} 工具（或同 server 等价工具）后再给出最终答复。"
+        )
+        return f"{prompt}\n\n{reminder}"
+
+    @staticmethod
+    def build_forced_rag_retry_prompt(prompt: str) -> str:
+        return RuntimePolicy.build_forced_server_retry_prompt(prompt, server_id="rag")
 
     @staticmethod
     def build_forced_trendradar_retry_prompt(prompt: str) -> str:
-        reminder = (
-            "[Runtime Enforcement]\n"
-            "你必须至少调用一次 TrendRadar MCP 工具，再给出最终答复。\n"
-            "优先调用 mcp_trendradar_get_latest_news；\n"
-            "如需关键词检索可调用 mcp_trendradar_search_news。\n"
-            "必须基于 TrendRadar 工具返回的数据作答，不要改用 python_execute 抓网页。\n"
+        return RuntimePolicy.build_forced_server_retry_prompt(
+            prompt, server_id="trendradar"
         )
-        return f"{prompt}\n\n{reminder}"
 
     @staticmethod
     def build_forced_playwright_retry_prompt(prompt: str) -> str:
-        reminder = (
-            "[Runtime Enforcement]\n"
-            "你必须至少调用一次 Playwright MCP 工具完成网页操作，再给出最终答复。\n"
-            "优先调用 mcp_playwright_browser_navigate，然后按需调用 click/type 等工具。\n"
-            "禁止把网页操作替换为 str_replace_editor 或 python_execute。\n"
+        return RuntimePolicy.build_forced_server_retry_prompt(
+            prompt, server_id="playwright"
         )
-        return f"{prompt}\n\n{reminder}"

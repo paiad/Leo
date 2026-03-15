@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from app.agent.manus import Manus
 from app.logger import logger
 from app.tool.tool_collection import ToolCollection
 from bff.services.runtime.runtime_mcp_router import RuntimeMcpRouter
+from bff.services.runtime.runtime_plan_models import PlannerStep
+from bff.services.runtime.runtime_planning import RuntimeMcpPlanningOrchestrator
 from bff.services.runtime.runtime_policy import RuntimePolicy
 
 
@@ -17,6 +20,7 @@ from bff.services.runtime.runtime_policy import RuntimePolicy
 class RuntimeExecutionResult:
     raw: str
     connected_servers: list[str] | None
+    expected_steps: list[tuple[str, str]] = field(default_factory=list)
 
 
 class RuntimeExecutor:
@@ -25,9 +29,11 @@ class RuntimeExecutor:
         *,
         mcp_router: RuntimeMcpRouter,
         policy: RuntimePolicy,
+        planning: RuntimeMcpPlanningOrchestrator | None = None,
     ):
         self._mcp_router = mcp_router
         self._policy = policy
+        self._planning = planning
 
     @staticmethod
     def prepare_non_interactive_tools(agent: Manus) -> None:
@@ -62,7 +68,7 @@ class RuntimeExecutor:
             },
         )
 
-        connected_servers, raw = await self._run_main_round(
+        execution = await self._run_main_round(
             agent=agent,
             prompt=prompt,
             time_budget_seconds=time_budget_seconds,
@@ -71,120 +77,35 @@ class RuntimeExecutor:
             run_state=run_state,
         )
 
-        rag_retry_enabled = self._policy.is_truthy_env(
-            os.getenv("BFF_RUNTIME_RAG_RETRY_ON_MISS", "1")
+        raw = await self._enforce_expected_steps(
+            agent=agent,
+            prompt=prompt,
+            initial_raw=execution.raw,
+            connected_servers=execution.connected_servers or [],
+            expected_steps=execution.expected_steps,
+            steps=steps,
+            time_budget_seconds=time_budget_seconds,
+            reuse_agent=reuse_agent,
+            shared_agent_lock=shared_agent_lock,
+            progress_callback=progress_callback,
+            emit_progress=emit_progress,
+            run_state=run_state,
         )
-        rag_expected = self._mcp_router.should_force_rag_for_prompt(prompt)
-        rag_used = self._policy.has_rag_tool_activity(agent.messages)
-        logger.info(
-            "RAG execution check: "
-            f"connected={bool('rag' in (connected_servers or []))}, "
-            f"expected={rag_expected}, used={rag_used}, "
-            f"retry_enabled={rag_retry_enabled}"
-        )
-        if rag_retry_enabled and rag_expected and not rag_used:
-            logger.warning(
-                "RAG expected but no rag tool call detected; triggering one retry with forced RAG instruction."
-            )
-            await emit_progress(
-                progress_callback,
-                {
-                    "type": "progress",
-                    "phase": "act_retry",
-                    "maxSteps": steps,
-                    "message": "检测到知识问答未触发 RAG，正在执行一次强制检索重试",
-                },
-            )
-            raw = await self._run_rag_retry(
-                agent=agent,
-                prompt=prompt,
-                connected_servers=connected_servers,
-                time_budget_seconds=time_budget_seconds,
-                reuse_agent=reuse_agent,
-                shared_agent_lock=shared_agent_lock,
-                run_state=run_state,
-            )
-
-        trendradar_retry_enabled = self._policy.is_truthy_env(
-            os.getenv("BFF_RUNTIME_TRENDRADAR_RETRY_ON_MISS", "1")
-        )
-        trendradar_expected = self._mcp_router.should_force_trendradar_for_prompt(prompt)
-        trendradar_used = self._policy.has_server_tool_activity(
-            agent.messages, "trendradar"
-        )
-        logger.info(
-            "TrendRadar execution check: "
-            f"connected={bool('trendradar' in (connected_servers or []))}, "
-            f"expected={trendradar_expected}, used={trendradar_used}, "
-            f"retry_enabled={trendradar_retry_enabled}"
-        )
-        if trendradar_retry_enabled and trendradar_expected and not trendradar_used:
-            logger.warning(
-                "TrendRadar expected but no trendradar tool call detected; triggering one retry with forced TrendRadar instruction."
-            )
-            await emit_progress(
-                progress_callback,
-                {
-                    "type": "progress",
-                    "phase": "act_retry",
-                    "maxSteps": steps,
-                    "message": "检测到新闻请求未触发 TrendRadar，正在执行一次强制重试",
-                },
-            )
-            raw = await self._run_trendradar_retry(
-                agent=agent,
-                prompt=prompt,
-                connected_servers=connected_servers,
-                time_budget_seconds=time_budget_seconds,
-                reuse_agent=reuse_agent,
-                shared_agent_lock=shared_agent_lock,
-                run_state=run_state,
-            )
-
-        playwright_retry_enabled = self._policy.is_truthy_env(
-            os.getenv("BFF_RUNTIME_PLAYWRIGHT_RETRY_ON_MISS", "1")
-        )
-        playwright_expected = self._mcp_router.should_force_playwright_for_prompt(prompt)
-        playwright_used = self._policy.has_server_tool_activity(agent.messages, "playwright")
-        logger.info(
-            "Playwright execution check: "
-            f"connected={bool('playwright' in (connected_servers or []))}, "
-            f"expected={playwright_expected}, used={playwright_used}, "
-            f"retry_enabled={playwright_retry_enabled}"
-        )
-        if playwright_retry_enabled and playwright_expected and not playwright_used:
-            logger.warning(
-                "Playwright expected but no playwright tool call detected; triggering one retry with forced Playwright instruction."
-            )
-            await emit_progress(
-                progress_callback,
-                {
-                    "type": "progress",
-                    "phase": "act_retry",
-                    "maxSteps": steps,
-                    "message": "检测到浏览器任务未触发 Playwright，正在执行一次强制重试",
-                },
-            )
-            raw = await self._run_playwright_retry(
-                agent=agent,
-                prompt=prompt,
-                connected_servers=connected_servers,
-                time_budget_seconds=time_budget_seconds,
-                reuse_agent=reuse_agent,
-                shared_agent_lock=shared_agent_lock,
-                run_state=run_state,
-            )
 
         elapsed_ms = int((time.perf_counter() - turn_started) * 1000)
         self._mcp_router.record_routing_outcome(
             prompt=prompt,
-            connected_server_ids=connected_servers,
+            connected_server_ids=execution.connected_servers,
             messages=agent.messages,
             latency_ms=elapsed_ms,
             success=bool((raw or "").strip()),
         )
 
-        return RuntimeExecutionResult(raw=raw, connected_servers=connected_servers)
+        return RuntimeExecutionResult(
+            raw=raw,
+            connected_servers=execution.connected_servers,
+            expected_steps=execution.expected_steps,
+        )
 
     async def _run_main_round(
         self,
@@ -195,49 +116,94 @@ class RuntimeExecutor:
         reuse_agent: bool,
         shared_agent_lock: asyncio.Lock,
         run_state: dict[str, bool],
-    ) -> tuple[list[str] | None, str]:
-        async def _inner() -> tuple[list[str] | None, str]:
-            connected_servers = await self._mcp_router.connect_enabled_mcp_servers(
-                agent, prompt
+    ) -> RuntimeExecutionResult:
+        async def _inner() -> RuntimeExecutionResult:
+            if not self._planning:
+                connected_servers = await self._mcp_router.connect_enabled_mcp_servers(agent, prompt)
+                run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(prompt)
+                raw = await self._run_agent(
+                    agent=agent,
+                    run_prompt=run_prompt,
+                    time_budget_seconds=time_budget_seconds,
+                    run_state=run_state,
+                )
+                expected_steps = [(server_id, "auto") for server_id in (connected_servers or [])]
+                return RuntimeExecutionResult(
+                    raw=raw,
+                    connected_servers=connected_servers,
+                    expected_steps=expected_steps,
+                )
+
+            decision = await self._planning.decide(prompt)
+            plan = decision.execute_plan
+            multi_step_enabled = self._policy.is_truthy_env(
+                os.getenv("BFF_RUNTIME_MULTI_STEP_EXECUTION", "0")
             )
-            run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(prompt)
+            logger.info(
+                "MCP execution decision: "
+                f"source={decision.execute_source}, "
+                f"shadow_only={decision.shadow_only}, "
+                f"gate_error={decision.gate_error_code}, "
+                f"need_mcp={plan.need_mcp}, "
+                f"steps={[{'server': s.server_id, 'tool': s.tool_name} for s in plan.plan_steps]}"
+            )
+
+            if not plan.need_mcp:
+                run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(prompt)
+                raw = await self._run_agent(
+                    agent=agent,
+                    run_prompt=run_prompt,
+                    time_budget_seconds=time_budget_seconds,
+                    run_state=run_state,
+                )
+                return RuntimeExecutionResult(raw=raw, connected_servers=[])
+
+            if multi_step_enabled and len(plan.plan_steps) > 1:
+                logger.info(
+                    "MCP execution: running multi-step plan with "
+                    f"{len(plan.plan_steps)} steps"
+                )
+                return await self._run_multi_step_plan(
+                    agent=agent,
+                    prompt=prompt,
+                    plan_steps=list(plan.plan_steps),
+                    fallback_server_id=plan.fallback.server_id,
+                    fallback_tool_name=plan.fallback.tool_name,
+                    time_budget_seconds=time_budget_seconds,
+                    run_state=run_state,
+                )
+
+            step = plan.plan_steps[0]
+            logger.info(
+                "MCP execution: running single-step plan "
+                f"server={step.server_id}, tool={step.tool_name}"
+            )
+            connected_servers = await self._connect_servers_by_ids(
+                agent=agent,
+                server_ids=[step.server_id],
+                connected_servers=[],
+            )
+            step_prompt = self._policy.build_plan_step_prompt(
+                prompt,
+                server_id=step.server_id,
+                tool_name=step.tool_name,
+                goal=step.goal,
+                reason=step.reason,
+                step_index=1,
+                total_steps=1,
+                retry=False,
+            )
+            run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(step_prompt)
             raw = await self._run_agent(
                 agent=agent,
                 run_prompt=run_prompt,
                 time_budget_seconds=time_budget_seconds,
                 run_state=run_state,
             )
-            return connected_servers, raw
-
-        return await self._run_with_optional_lock(
-            reuse_agent=reuse_agent,
-            shared_agent_lock=shared_agent_lock,
-            action=_inner,
-        )
-
-    async def _run_rag_retry(
-        self,
-        *,
-        agent: Manus,
-        prompt: str,
-        connected_servers: list[str] | None,
-        time_budget_seconds: int,
-        reuse_agent: bool,
-        shared_agent_lock: asyncio.Lock,
-        run_state: dict[str, bool],
-    ) -> str:
-        retry_prompt = self._policy.build_forced_rag_retry_prompt(prompt)
-        retry_run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(retry_prompt)
-
-        async def _inner() -> str:
-            if "rag" not in (connected_servers or []):
-                connected = await self._mcp_router.connect_server_by_id(agent, "rag")
-                logger.info(f"Forced rag connection during retry: connected={connected}")
-            return await self._run_agent(
-                agent=agent,
-                run_prompt=retry_run_prompt,
-                time_budget_seconds=time_budget_seconds,
-                run_state=run_state,
+            return RuntimeExecutionResult(
+                raw=raw,
+                connected_servers=connected_servers,
+                expected_steps=[(step.server_id, step.tool_name)],
             )
 
         return await self._run_with_optional_lock(
@@ -246,74 +212,264 @@ class RuntimeExecutor:
             action=_inner,
         )
 
-    async def _run_trendradar_retry(
+    async def _run_multi_step_plan(
         self,
         *,
         agent: Manus,
         prompt: str,
-        connected_servers: list[str] | None,
+        plan_steps: list[PlannerStep],
+        fallback_server_id: str | None,
+        fallback_tool_name: str | None,
         time_budget_seconds: int,
-        reuse_agent: bool,
-        shared_agent_lock: asyncio.Lock,
         run_state: dict[str, bool],
-    ) -> str:
-        retry_prompt = self._policy.build_forced_trendradar_retry_prompt(prompt)
-        retry_run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(retry_prompt)
+    ) -> RuntimeExecutionResult:
+        connected_servers: list[str] = []
+        expected_steps: list[tuple[str, str]] = []
+        raw = ""
+        total_steps = len(plan_steps)
 
-        async def _inner() -> str:
-            if "trendradar" not in (connected_servers or []):
-                connected = await self._mcp_router.connect_server_by_id(
-                    agent, "trendradar"
-                )
-                logger.info(
-                    f"Forced trendradar connection during retry: connected={connected}"
-                )
-            return await self._run_agent(
+        for index, step in enumerate(plan_steps, start=1):
+            logger.info(
+                "MCP step start: "
+                f"{index}/{total_steps}, server={step.server_id}, tool={step.tool_name}, goal={step.goal}"
+            )
+            connected_servers = await self._connect_servers_by_ids(
                 agent=agent,
-                run_prompt=retry_run_prompt,
+                server_ids=[step.server_id],
+                connected_servers=connected_servers,
+            )
+
+            before_count = len(agent.messages)
+            step_prompt = self._policy.build_plan_step_prompt(
+                prompt,
+                server_id=step.server_id,
+                tool_name=step.tool_name,
+                goal=step.goal,
+                reason=step.reason,
+                step_index=index,
+                total_steps=total_steps,
+                retry=False,
+            )
+            run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(step_prompt)
+            raw = await self._run_agent(
+                agent=agent,
+                run_prompt=run_prompt,
                 time_budget_seconds=time_budget_seconds,
                 run_state=run_state,
             )
 
-        return await self._run_with_optional_lock(
-            reuse_agent=reuse_agent,
-            shared_agent_lock=shared_agent_lock,
-            action=_inner,
+            delta_messages = list(agent.messages[before_count:])
+            step_done = self._is_step_done(delta_messages, step.server_id, step.tool_name)
+            if not step_done:
+                # Retry same step once with stronger enforcement.
+                logger.warning(
+                    "MCP step miss: first attempt did not call expected server/tool; "
+                    f"step={index}, server={step.server_id}, tool={step.tool_name}, retry_once=true"
+                )
+                retry_before = len(agent.messages)
+                retry_prompt = self._policy.build_plan_step_prompt(
+                    prompt,
+                    server_id=step.server_id,
+                    tool_name=step.tool_name,
+                    goal=step.goal,
+                    reason=step.reason,
+                    step_index=index,
+                    total_steps=total_steps,
+                    retry=True,
+                )
+                retry_run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(retry_prompt)
+                raw = await self._run_agent(
+                    agent=agent,
+                    run_prompt=retry_run_prompt,
+                    time_budget_seconds=time_budget_seconds,
+                    run_state=run_state,
+                )
+                retry_delta = list(agent.messages[retry_before:])
+                step_done = self._is_step_done(retry_delta, step.server_id, step.tool_name)
+
+            if (not step_done) and fallback_server_id and fallback_server_id != step.server_id:
+                logger.warning(
+                    "MCP step fallback: "
+                    f"step={index}, expected={step.server_id}/{step.tool_name}, "
+                    f"fallback={fallback_server_id}/{fallback_tool_name or 'auto'}"
+                )
+                connected_servers = await self._connect_servers_by_ids(
+                    agent=agent,
+                    server_ids=[fallback_server_id],
+                    connected_servers=connected_servers,
+                )
+                fallback_prompt = self._policy.build_forced_server_retry_prompt(
+                    prompt,
+                    server_id=fallback_server_id,
+                    tool_name=fallback_tool_name,
+                )
+                fallback_run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(fallback_prompt)
+                raw = await self._run_agent(
+                    agent=agent,
+                    run_prompt=fallback_run_prompt,
+                    time_budget_seconds=time_budget_seconds,
+                    run_state=run_state,
+                )
+
+            expected_steps.append((step.server_id, step.tool_name))
+            self._record_step_outcome(
+                prompt=prompt,
+                step_index=index,
+                step=step,
+                connected_servers=connected_servers,
+                success=step_done,
+            )
+
+        return RuntimeExecutionResult(
+            raw=raw,
+            connected_servers=connected_servers,
+            expected_steps=expected_steps,
         )
 
-    async def _run_playwright_retry(
+    async def _enforce_expected_steps(
         self,
         *,
         agent: Manus,
         prompt: str,
-        connected_servers: list[str] | None,
+        initial_raw: str,
+        connected_servers: list[str],
+        expected_steps: list[tuple[str, str]],
+        steps: int,
         time_budget_seconds: int,
         reuse_agent: bool,
         shared_agent_lock: asyncio.Lock,
+        progress_callback: Callable[[dict[str, Any]], Any] | None,
+        emit_progress: Callable[[Callable[[dict[str, Any]], Any] | None, dict[str, Any]], Any],
         run_state: dict[str, bool],
     ) -> str:
-        retry_prompt = self._policy.build_forced_playwright_retry_prompt(prompt)
-        retry_run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(retry_prompt)
+        if not expected_steps:
+            return initial_raw
 
-        async def _inner() -> str:
-            if "playwright" not in (connected_servers or []):
-                connected = await self._mcp_router.connect_server_by_id(
-                    agent, "playwright"
+        retry_enabled = self._policy.is_truthy_env(
+            os.getenv("BFF_RUNTIME_SERVER_RETRY_ON_MISS", "1")
+        )
+        raw = initial_raw
+
+        async def _retry_once(server_id: str, tool_name: str) -> str:
+            retry_prompt = self._policy.build_forced_server_retry_prompt(
+                prompt,
+                server_id=server_id,
+                tool_name=tool_name,
+            )
+            retry_run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(retry_prompt)
+
+            async def _inner_retry() -> str:
+                if server_id not in connected_servers:
+                    connected = await self._mcp_router.connect_server_by_id(agent, server_id)
+                    if connected:
+                        connected_servers.append(server_id)
+                    logger.info(
+                        f"Forced {server_id} connection during retry: connected={connected}"
+                    )
+                return await self._run_agent(
+                    agent=agent,
+                    run_prompt=retry_run_prompt,
+                    time_budget_seconds=time_budget_seconds,
+                    run_state=run_state,
                 )
-                logger.info(
-                    f"Forced playwright connection during retry: connected={connected}"
-                )
-            return await self._run_agent(
-                agent=agent,
-                run_prompt=retry_run_prompt,
-                time_budget_seconds=time_budget_seconds,
-                run_state=run_state,
+
+            return await self._run_with_optional_lock(
+                reuse_agent=reuse_agent,
+                shared_agent_lock=shared_agent_lock,
+                action=_inner_retry,
             )
 
-        return await self._run_with_optional_lock(
-            reuse_agent=reuse_agent,
-            shared_agent_lock=shared_agent_lock,
-            action=_inner,
+        for server_id, tool_name in expected_steps:
+            used_tool = self._policy.has_server_specific_tool_activity(
+                agent.messages, server_id, tool_name
+            )
+            used_server = self._policy.has_server_tool_activity(agent.messages, server_id)
+            used = used_tool or ((tool_name or "").strip().lower() == "auto" and used_server)
+            logger.info(
+                "Plan step execution check: "
+                f"server={server_id}, tool={tool_name}, used={used}, retry_enabled={retry_enabled}"
+            )
+            if retry_enabled and not used:
+                await emit_progress(
+                    progress_callback,
+                    {
+                        "type": "progress",
+                        "phase": "act_retry",
+                        "maxSteps": steps,
+                        "message": f"检测到计划步骤未触发 {server_id}，正在执行一次强制重试",
+                    },
+                )
+                raw = await _retry_once(server_id, tool_name)
+
+        return raw
+
+    async def _connect_servers_by_ids(
+        self,
+        *,
+        agent: Manus,
+        server_ids: list[str],
+        connected_servers: list[str],
+    ) -> list[str]:
+        unique_ids: list[str] = []
+        for sid in server_ids:
+            server_id = (sid or "").strip().lower()
+            if not server_id or server_id in unique_ids:
+                continue
+            unique_ids.append(server_id)
+
+        current = list(connected_servers)
+        for server_id in unique_ids:
+            if server_id in current:
+                continue
+            connected = await self._mcp_router.connect_server_by_id(agent, server_id)
+            if connected:
+                current.append(server_id)
+        return current
+
+    def _is_step_done(self, messages: list[Any], server_id: str, tool_name: str) -> bool:
+        used_tool = self._policy.has_server_specific_tool_activity(
+            messages, server_id, tool_name
+        )
+        if used_tool:
+            return True
+        return (tool_name or "").strip().lower() == "auto" and self._policy.has_server_tool_activity(
+            messages, server_id
+        )
+
+    def _record_step_outcome(
+        self,
+        *,
+        prompt: str,
+        step_index: int,
+        step: PlannerStep,
+        connected_servers: list[str],
+        success: bool,
+    ) -> None:
+        request_preview = self._policy.extract_current_user_request(prompt)
+        request_preview = " ".join(request_preview.split())
+        if len(request_preview) > 180:
+            request_preview = f"{request_preview[:180]}..."
+        prompt_hash = hashlib.sha256(
+            self._mcp_router.normalized_current_user_request(prompt).encode("utf-8")
+        ).hexdigest()
+        self._mcp_router.record_runtime_routing_event(
+            {
+                "event_type": "step_outcome",
+                "prompt_hash": prompt_hash,
+                "intent": "planned_execution",
+                "selected_server_id": step.server_id,
+                "candidate_servers": [step.server_id],
+                "scores": {
+                    "step_index": step_index,
+                    "tool_name": step.tool_name,
+                    "goal": step.goal,
+                    "success": success,
+                    "request_preview": request_preview,
+                },
+                "connected_servers": list(connected_servers),
+                "used_servers": [step.server_id] if success else [],
+                "success": success,
+            }
         )
 
     @staticmethod

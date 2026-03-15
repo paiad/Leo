@@ -9,9 +9,11 @@ from bff.services.memory.memory_sync_service import MemorySyncService
 from bff.services.models.model_service import ModelService
 from bff.services.rag.rag_service import RagRuntimeService
 from bff.services.runtime.agent_runtime import ManusRuntime
+from bff.services.runtime.runtime_observability_service import RuntimeObservabilityService
 from bff.services.tooling.tooling_service import ToolingService
 
 tooling_service = ToolingService(store=store)
+runtime_observability_service = RuntimeObservabilityService(store=store)
 model_service = ModelService(store=create_model_store())
 memory_sync_service = MemorySyncService(store=store)
 rag_service = RagRuntimeService(root_path=Path(__file__).resolve().parents[2])

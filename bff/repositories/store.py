@@ -117,6 +117,31 @@ class InMemoryStore:
         if len(self.mcp_routing_events) > 2000:
             self.mcp_routing_events = self.mcp_routing_events[-2000:]
 
+    def list_mcp_routing_events(
+        self,
+        *,
+        limit: int = 100,
+        event_type: str | None = None,
+        since_iso: str | None = None,
+    ) -> list[dict[str, object]]:
+        normalized_limit = max(1, min(1000, int(limit or 100)))
+        normalized_event_type = (event_type or "").strip().lower()
+        filtered: list[dict[str, object]] = []
+        for event in self.mcp_routing_events:
+            item = dict(event or {})
+            item_type = str(item.get("event_type") or "").strip().lower()
+            created_at = str(item.get("createdAt") or item.get("created_at") or "")
+            if normalized_event_type and item_type != normalized_event_type:
+                continue
+            if since_iso and created_at and created_at < since_iso:
+                continue
+            if created_at and "createdAt" not in item:
+                item["createdAt"] = created_at
+            filtered.append(item)
+
+        filtered.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
+        return filtered[:normalized_limit]
+
 
 @dataclass
 class PostgresStore:
@@ -617,6 +642,79 @@ class PostgresStore:
                     ),
                 )
             conn.commit()
+
+    def list_mcp_routing_events(
+        self,
+        *,
+        limit: int = 100,
+        event_type: str | None = None,
+        since_iso: str | None = None,
+    ) -> list[dict[str, object]]:
+        normalized_limit = max(1, min(1000, int(limit or 100)))
+        clauses = []
+        params: list[object] = []
+        if event_type:
+            clauses.append("event_type = %s")
+            params.append(str(event_type).strip().lower())
+        if since_iso:
+            clauses.append("created_at >= %s")
+            params.append(str(since_iso))
+
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = f"""
+            SELECT
+                id,
+                event_type,
+                prompt_hash,
+                intent,
+                selected_server_id,
+                candidate_servers_json,
+                scores_json,
+                connected_servers_json,
+                used_servers_json,
+                success,
+                latency_ms,
+                created_at
+            FROM runtime_mcp_routing_events
+            {where_sql}
+            ORDER BY created_at DESC
+            LIMIT %s
+        """
+        params.append(normalized_limit)
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, tuple(params))
+                rows = cur.fetchall()
+
+        events: list[dict[str, object]] = []
+        for row in rows:
+            try:
+                events.append(
+                    {
+                        "id": str(row["id"]),
+                        "event_type": str(row["event_type"] or ""),
+                        "prompt_hash": str(row["prompt_hash"] or ""),
+                        "intent": str(row["intent"] or ""),
+                        "selected_server_id": row["selected_server_id"],
+                        "candidate_servers": json.loads(
+                            str(row.get("candidate_servers_json") or "[]")
+                        ),
+                        "scores": json.loads(str(row.get("scores_json") or "{}")),
+                        "connected_servers": json.loads(
+                            str(row.get("connected_servers_json") or "[]")
+                        ),
+                        "used_servers": json.loads(
+                            str(row.get("used_servers_json") or "[]")
+                        ),
+                        "success": row.get("success"),
+                        "latency_ms": row.get("latency_ms"),
+                        "createdAt": str(row.get("created_at") or ""),
+                    }
+                )
+            except Exception:
+                continue
+        return events
 
 
 def create_store() -> InMemoryStore | PostgresStore:

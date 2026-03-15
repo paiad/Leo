@@ -3,6 +3,8 @@ import type {
   ChatDecisionEvent,
   ChatMcpCatalogItem,
   ChatMcpDiscoveredTool,
+  ChatRoutingDashboard,
+  ChatRoutingEvent,
   ChatMcpServer,
   ChatToolEvent,
   ChatToolTransportType,
@@ -107,6 +109,18 @@ type McpServerListApiResponse = {
 type McpDiscoveredToolListApiResponse = {
   success: boolean;
   data: ChatMcpDiscoveredTool[];
+  error: string | null;
+};
+
+type RuntimeRoutingDashboardApiResponse = {
+  success: boolean;
+  data: ChatRoutingDashboard | null;
+  error: string | null;
+};
+
+type RuntimeRoutingEventListApiResponse = {
+  success: boolean;
+  data: ChatRoutingEvent[];
   error: string | null;
 };
 
@@ -825,3 +839,54 @@ export async function fetchMcpCatalog(): Promise<ChatMcpCatalogItem[]> {
 
 // Backward-compatible alias.
 export const fetchToolCatalog = fetchMcpCatalog;
+
+export async function fetchMcpRoutingDashboard(days = 7): Promise<ChatRoutingDashboard> {
+  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE_URL;
+  const response = await fetch(`${baseUrl}/api/v1/runtime/mcp-routing/dashboard?days=${days}`, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`加载 MCP 路由看板失败：HTTP ${response.status}`);
+  }
+
+  const payload = (await response.json()) as RuntimeRoutingDashboardApiResponse;
+  if (!payload.success || !payload.data) {
+    throw new Error(payload.error ?? "MCP 路由看板返回异常");
+  }
+  return payload.data;
+}
+
+export async function fetchMcpRoutingEvents(
+  days = 1,
+  limit = 50,
+  eventType?: string,
+): Promise<ChatRoutingEvent[]> {
+  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE_URL;
+  const query = new URLSearchParams({
+    days: String(days),
+    limit: String(limit),
+  });
+  if (eventType?.trim()) {
+    query.set("eventType", eventType.trim());
+  }
+  const response = await fetch(`${baseUrl}/api/v1/runtime/mcp-routing/events?${query.toString()}`, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`加载 MCP 路由事件失败：HTTP ${response.status}`);
+  }
+
+  const payload = (await response.json()) as RuntimeRoutingEventListApiResponse;
+  if (!payload.success) {
+    throw new Error(payload.error ?? "MCP 路由事件返回异常");
+  }
+  return payload.data ?? [];
+}
