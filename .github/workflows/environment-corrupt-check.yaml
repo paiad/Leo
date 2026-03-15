@@ -3,11 +3,13 @@ on:
   push:
     branches: ["main"]
     paths:
-      - requirements.txt
+      - pyproject.toml
+      - uv.lock
   pull_request:
     branches: ["main"]
     paths:
-      - requirements.txt
+      - pyproject.toml
+      - uv.lock
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true

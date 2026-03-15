@@ -13,6 +13,7 @@ from bff.services.runtime.runtime_events import RuntimeEventManager
 from bff.services.runtime.runtime_executor import RuntimeExecutor
 from bff.services.runtime.runtime_finalizer import RuntimeFinalizer
 from bff.services.runtime.mcp_routing.runtime_mcp_router import RuntimeMcpRouter
+from bff.services.runtime.mcp_routing.runtime_logviz import render_ascii_box
 from bff.services.runtime.mcp_routing.runtime_planning import RuntimeMcpPlanningOrchestrator
 from bff.services.runtime.runtime_policy import RuntimePolicy, RuntimeStallDetector
 from bff.services.runtime.runtime_progress import RuntimeProgressEmitter
@@ -144,9 +145,22 @@ class ManusRuntime:
         agent.tool_calls = []
         agent.event_callback = None
 
-    @staticmethod
-    def _log_final_answer(final_text: str) -> None:
+    def _log_final_answer(self, final_text: str) -> None:
         text = (final_text or "").strip()
+        if self._is_truthy_env(os.getenv("BFF_RUNTIME_BOX_LOG_ENABLED", "1")):
+            max_chars = self._env_int("BFF_RUNTIME_FINAL_BOX_MAX_CHARS", 2400, minimum=120)
+            is_truncated = len(text) > max_chars if text else False
+            rendered_text = text[:max_chars].rstrip() + "..." if is_truncated else text
+            lines = [
+                f"final.state: {'ok' if text else 'empty'}",
+                f"final.chars: {len(text)}",
+                f"final.truncated: {is_truncated}",
+                "final.text:",
+            ]
+            lines.extend(rendered_text.splitlines() or ["<empty>"])
+            logger.info("\n" + render_ascii_box("MCP RESPONSE", lines))
+            return
+
         if not text:
             logger.info("🍃 Manus final answer: <empty>")
             return

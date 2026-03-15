@@ -31,7 +31,7 @@ body:
         - System version:
         - Python version:
         - OpenManus version or branch:
-        - Installation method (e.g., `pip install -r requirements.txt` or `pip install -e .`):
+        - Installation method (e.g., `uv sync`):
     validations:
       required: true
   - type: textarea

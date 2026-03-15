@@ -8,6 +8,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends git curl \
 
 COPY . .
 
-RUN uv pip install --system -r requirements.txt
+RUN uv sync --frozen
 
-CMD ["python", "-m", "uvicorn", "bff.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run", "python", "-m", "uvicorn", "bff.main:app", "--host", "0.0.0.0", "--port", "8000"]

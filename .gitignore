@@ -10,6 +10,8 @@ logs/chat/
 
 # Data
 data/
+backups/
+*.dump
 
 # Workspace
 workspace/
@@ -147,6 +149,7 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.uv312/
 env/
 venv/
 ENV/

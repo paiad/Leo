@@ -4,21 +4,20 @@
 
 ```bash
 cd E:\Github\OpenManus
-.\.venv\Scripts\activate
-pip install -r requirements.txt
+uv sync
 ```
 
 ## 2. Start RAG MCP server
 
 ```bash
 cd E:\Github\OpenManus
-.\.venv\Scripts\python -m app.rag_mcp.server --transport stdio
+uv run python -m app.rag_mcp.server --transport stdio
 ```
 
 Or:
 
 ```bash
-.\.venv\Scripts\python run_rag_mcp_server.py --transport stdio
+uv run python run_rag_mcp_server.py --transport stdio
 ```
 
 ## 3. Register in BFF
@@ -28,7 +27,7 @@ Or:
 3. Start BFF:
 
 ```bash
-.\.venv\Scripts\python -m uvicorn bff.main:app --host 0.0.0.0 --port 8000
+uv run python -m uvicorn bff.main:app --host 0.0.0.0 --port 8000
 ```
 
 4. Discover tools:
