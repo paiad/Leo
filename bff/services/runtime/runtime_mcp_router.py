@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any
+from typing import Any, Literal
 
 from app.agent.manus import Manus
 from app.logger import logger
@@ -10,6 +10,15 @@ from bff.repositories.store import InMemoryStore
 
 
 class RuntimeMcpRouter:
+    IntentType = Literal[
+        "browser_automation",
+        "web_search",
+        "repo_ops",
+        "knowledge_qa",
+        "tooling_meta",
+        "general",
+    ]
+
     _MCP_ROUTING_STOPWORDS = {
         "mcp",
         "tool",
@@ -59,6 +68,61 @@ class RuntimeMcpRouter:
         "服务器",
         "接口",
         "api",
+    }
+    _SEARCH_HINTS = {
+        "search",
+        "web search",
+        "find",
+        "look up",
+        "news",
+        "查一下",
+        "搜索",
+        "检索",
+        "资讯",
+    }
+    _REPO_HINTS = {
+        "github",
+        "repo",
+        "repository",
+        "pull request",
+        "pr",
+        "issue",
+        "commit",
+        "branch",
+        "仓库",
+        "分支",
+        "提交",
+        "拉取请求",
+        "代码库",
+    }
+    _BROWSER_ACTION_HINTS = {
+        "open",
+        "open website",
+        "navigate",
+        "click",
+        "fill form",
+        "play",
+        "pause",
+        "video",
+        "music",
+        "song",
+        "bilibili",
+        "youtube",
+        "browser",
+        "web page",
+        "网页",
+        "网站",
+        "浏览器",
+        "打开",
+        "打开网页",
+        "页面",
+        "点击",
+        "播放",
+        "暂停",
+        "视频",
+        "音乐",
+        "歌曲",
+        "b站",
     }
 
     def __init__(self, store: InMemoryStore | None = None):
@@ -112,6 +176,83 @@ class RuntimeMcpRouter:
         if self._is_tooling_meta_query(prompt_text):
             return False
         return self._looks_like_knowledge_qa(prompt_text)
+
+    def _looks_like_browser_action_request(self, prompt_text: str) -> bool:
+        if not prompt_text:
+            return False
+        return any(hint in prompt_text for hint in self._BROWSER_ACTION_HINTS)
+
+    def _classify_intent(self, prompt_text: str) -> IntentType:
+        if not prompt_text:
+            return "general"
+        if self._is_tooling_meta_query(prompt_text):
+            return "tooling_meta"
+        if self._looks_like_browser_action_request(prompt_text):
+            return "browser_automation"
+        if any(hint in prompt_text for hint in self._REPO_HINTS):
+            return "repo_ops"
+        if self._looks_like_knowledge_qa(prompt_text) and not self._is_rag_negative_opt_out(
+            prompt_text
+        ):
+            return "knowledge_qa"
+        if any(hint in prompt_text for hint in self._SEARCH_HINTS):
+            return "web_search"
+        return "general"
+
+    def _server_explicitly_mentioned(self, prompt_text: str, server: Any) -> bool:
+        sid = self._normalize_text(getattr(server, "serverId", ""))
+        name = self._normalize_text(getattr(server, "name", ""))
+        return bool((sid and sid in prompt_text) or (name and name in prompt_text))
+
+    def _intent_matches_server(
+        self, intent: IntentType, prompt_text: str, server: Any
+    ) -> bool:
+        sid = self._normalize_text(getattr(server, "serverId", ""))
+        if intent == "browser_automation":
+            return sid == "playwright" or self._server_explicitly_mentioned(
+                prompt_text, server
+            )
+        if intent == "web_search":
+            return sid == "exa" or self._server_explicitly_mentioned(prompt_text, server)
+        if intent == "repo_ops":
+            return sid == "github" or self._server_explicitly_mentioned(
+                prompt_text, server
+            )
+        if intent == "knowledge_qa":
+            return sid == "rag" or self._server_explicitly_mentioned(prompt_text, server)
+        if intent == "tooling_meta":
+            return False
+        return True
+
+    def _server_priority(self, prompt_text: str, server_id: str) -> int:
+        sid = self._normalize_text(server_id)
+        intent = self._classify_intent(prompt_text)
+
+        if sid == "playwright":
+            return 0 if intent == "browser_automation" else 40
+        if sid == "rag":
+            if intent == "knowledge_qa":
+                return 5
+            return 45
+        if sid == "github":
+            if intent == "repo_ops":
+                return 10
+            return 50
+        if sid == "exa":
+            if intent == "web_search":
+                return 20
+            return 55
+        return 60
+
+    def _rank_selected_servers(self, prompt: str, servers: list[Any]) -> list[Any]:
+        prompt_text = self._normalize_text(self._extract_current_user_request(prompt))
+        return sorted(
+            servers,
+            key=lambda s: (
+                self._server_priority(prompt_text, getattr(s, "serverId", "")),
+                getattr(s, "serverId", ""),
+            ),
+        )
 
     @staticmethod
     def _expand_path(value: str | None) -> str | None:
@@ -258,6 +399,10 @@ class RuntimeMcpRouter:
         if self._is_truthy_env(os.getenv("BFF_RUNTIME_CONNECT_ALL_MCP")):
             return True
 
+        intent = self._classify_intent(prompt_text)
+        if not self._intent_matches_server(intent, prompt_text, server):
+            return False
+
         server_id = getattr(server, "serverId", "")
         if server_id == "rag" and self.should_force_rag_for_prompt(prompt):
             logger.info("MCP routing: force-select rag for knowledge QA request")
@@ -384,6 +529,9 @@ class RuntimeMcpRouter:
     async def connect_enabled_mcp_servers(self, agent: Manus, prompt: str) -> list[str]:
         if not self._store:
             return []
+        prompt_text = self._normalize_text(self._extract_current_user_request(prompt))
+        intent = self._classify_intent(prompt_text)
+        logger.info(f"MCP routing intent: {intent}")
 
         use_local_mcp = self._is_truthy_env(
             os.getenv("BFF_RUNTIME_USE_LEO_LOCAL_MCP", "0")
@@ -399,6 +547,14 @@ class RuntimeMcpRouter:
                 selected_servers.append(server)
 
         if selected_servers:
+            ranked_servers = self._rank_selected_servers(prompt, selected_servers)
+            if [s.serverId for s in ranked_servers] != [s.serverId for s in selected_servers]:
+                logger.info(
+                    "MCP routing ranked matches by intent: "
+                    f"{[s.serverId for s in ranked_servers]}"
+                )
+            selected_servers = ranked_servers
+
             # Multi-server connect/disconnect in the same request is currently unstable
             # with some stdio MCP servers on Windows (cancel-scope propagation). Keep
             # default routing to a single best-match server unless explicitly enabled.

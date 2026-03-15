@@ -1,6 +1,7 @@
 """File and directory manipulation tool with sandbox support."""
 
 from collections import defaultdict
+import os
 from pathlib import Path
 from typing import Any, DefaultDict, List, Literal, Optional, get_args
 
@@ -218,6 +219,29 @@ class StrReplaceEditor(BaseTool):
     @staticmethod
     async def _view_directory(path: PathLike, operator: FileOperator) -> CLIResult:
         """Display directory contents."""
+        # On Windows local mode, shell `find` is not GNU find; use Python traversal.
+        if os.name == "nt" and isinstance(operator, LocalFileOperator):
+            root = Path(path)
+            items: list[str] = []
+            for current, dirs, files in os.walk(root):
+                rel_parts = Path(current).relative_to(root).parts
+                if len(rel_parts) > 2:
+                    dirs[:] = []
+                    continue
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
+                files = [f for f in files if not f.startswith(".")]
+
+                for d in dirs:
+                    items.append(str(Path(current) / d))
+                for f in files:
+                    items.append(str(Path(current) / f))
+
+            stdout = (
+                f"Here's the files and directories up to 2 levels deep in {path}, "
+                f"excluding hidden items:\n" + "\n".join(items) + "\n"
+            )
+            return CLIResult(output=stdout, error="")
+
         find_cmd = f"find {path} -maxdepth 2 -not -path '*/\\.*'"
 
         # Execute command using the operator

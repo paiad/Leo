@@ -1,6 +1,7 @@
 """File operation interfaces and implementations for local and sandbox environments."""
 
 import asyncio
+import locale
 from pathlib import Path
 from typing import Optional, Protocol, Tuple, Union, runtime_checkable
 
@@ -44,6 +45,20 @@ class LocalFileOperator(FileOperator):
 
     encoding: str = "utf-8"
 
+    @staticmethod
+    def _decode_output(payload: bytes) -> str:
+        if not payload:
+            return ""
+
+        for enc in ("utf-8", locale.getpreferredencoding(False), "gbk"):
+            if not enc:
+                continue
+            try:
+                return payload.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return payload.decode("utf-8", errors="replace")
+
     async def read_file(self, path: PathLike) -> str:
         """Read content from a local file."""
         try:
@@ -80,8 +95,8 @@ class LocalFileOperator(FileOperator):
             )
             return (
                 process.returncode or 0,
-                stdout.decode(),
-                stderr.decode(),
+                self._decode_output(stdout),
+                self._decode_output(stderr),
             )
         except asyncio.TimeoutError as exc:
             try:

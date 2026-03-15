@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from bff.services.runtime.agent_runtime import ManusRuntime
+from bff.services.runtime.runtime_mcp_router import RuntimeMcpRouter
 
 
 def test_mcp_selection_ignores_history_wrapper_noise():
@@ -117,3 +118,61 @@ def test_mcp_selection_does_not_force_rag_on_tooling_meta_query():
     )
 
     assert runtime._should_connect_server(prompt, rag) is False
+
+
+def test_mcp_ranking_prefers_playwright_for_browser_actions():
+    router = RuntimeMcpRouter(store=None)
+    servers = [
+        SimpleNamespace(serverId="exa"),
+        SimpleNamespace(serverId="github"),
+        SimpleNamespace(serverId="playwright"),
+        SimpleNamespace(serverId="rag"),
+    ]
+    prompt = "[Current User Request]\n打开B站并播放周杰伦稻香"
+
+    ranked = router._rank_selected_servers(prompt, servers)
+    assert ranked[0].serverId == "playwright"
+
+
+def test_mcp_ranking_prefers_exa_for_search_request():
+    router = RuntimeMcpRouter(store=None)
+    servers = [
+        SimpleNamespace(serverId="exa"),
+        SimpleNamespace(serverId="playwright"),
+    ]
+    prompt = "[Current User Request]\n帮我搜索今天AI新闻"
+
+    ranked = router._rank_selected_servers(prompt, servers)
+    assert ranked[0].serverId == "exa"
+
+
+def test_browser_intent_blocks_exa_default_match():
+    runtime = ManusRuntime(store=None)
+    exa = SimpleNamespace(
+        serverId="exa",
+        name="exa",
+        description="web search server",
+        discoveredTools=[],
+    )
+    prompt = (
+        "[Current User Request]\n"
+        "打开B站并播放周杰伦稻香"
+    )
+
+    assert runtime._should_connect_server(prompt, exa) is False
+
+
+def test_browser_intent_allows_explicitly_named_nondefault_server():
+    runtime = ManusRuntime(store=None)
+    exa = SimpleNamespace(
+        serverId="exa",
+        name="exa",
+        description="web search server",
+        discoveredTools=[],
+    )
+    prompt = (
+        "[Current User Request]\n"
+        "用 exa 帮我打开B站并搜索稻香"
+    )
+
+    assert runtime._should_connect_server(prompt, exa) is True

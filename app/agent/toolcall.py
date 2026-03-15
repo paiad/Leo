@@ -1,5 +1,7 @@
 import asyncio
 import json
+import os
+import re
 import time
 from typing import Any, List, Optional, Union
 
@@ -206,6 +208,14 @@ class ToolCallAgent(ReActAgent):
             # Parse arguments
             args = json.loads(command.function.arguments or "{}")
 
+            if self._should_block_python_browser_automation(name=name, args=args):
+                return (
+                    "Error: Policy blocked `python_execute` browser automation. "
+                    "For opening websites, search/click/playback, use Playwright MCP tools "
+                    "such as `mcp_playwright_browser_navigate`, "
+                    "`mcp_playwright_browser_type`, `mcp_playwright_browser_click`."
+                )
+
             # Execute the tool
             logger.info(f"🔧 Activating tool: '{name}'...")
             result = await self.available_tools.execute(name=name, tool_input=args)
@@ -236,6 +246,93 @@ class ToolCallAgent(ReActAgent):
             error_msg = f"⚠️ Tool '{name}' encountered a problem: {str(e)}"
             logger.exception(error_msg)
             return f"Error: {error_msg}"
+
+    @staticmethod
+    def _contains_browser_automation_code(code: str) -> bool:
+        if not code:
+            return False
+
+        patterns = (
+            r"\bimport\s+webbrowser\b",
+            r"\bwebbrowser\.open\s*\(",
+            r"\bfrom\s+playwright\b",
+            r"\bimport\s+playwright\b",
+            r"\bplaywright\.sync_api\b",
+            r"\bplaywright\.async_api\b",
+            r"\bimport\s+selenium\b",
+            r"\bfrom\s+selenium\b",
+            r"\bwebdriver\b",
+            r"\bpyautogui\b",
+            r"\bpage\.goto\s*\(",
+            r"\bbrowser\.new_page\s*\(",
+        )
+        return any(
+            re.search(pattern, code, flags=re.IGNORECASE | re.MULTILINE)
+            for pattern in patterns
+        )
+
+    def _user_explicitly_requests_python_browser_script(self) -> bool:
+        last_user_text = ""
+        for msg in reversed(self.memory.messages):
+            if msg.role == "user" and msg.content:
+                # The agent appends `next_step_prompt` as a synthetic user message
+                # each step; it is not an actual user intent signal.
+                if self.next_step_prompt and (
+                    msg.content.strip() == self.next_step_prompt.strip()
+                ):
+                    continue
+                last_user_text = msg.content.lower()
+                break
+
+        if not last_user_text:
+            return False
+
+        python_hints = (
+            "python script",
+            "python 脚本",
+            "用python",
+            "用 python",
+            "写脚本",
+            "playwright 脚本",
+            "selenium 脚本",
+        )
+        browser_hints = (
+            "browser",
+            "playwright",
+            "selenium",
+            "web",
+            "website",
+            "浏览器",
+            "网页",
+            "网站",
+            "自动化",
+            "打开",
+        )
+        return any(h in last_user_text for h in python_hints) and any(
+            h in last_user_text for h in browser_hints
+        )
+
+    def _should_block_python_browser_automation(
+        self, name: str, args: dict[str, Any]
+    ) -> bool:
+        if name != "python_execute":
+            return False
+
+        code = args.get("code")
+        if not isinstance(code, str):
+            return False
+
+        if not self._contains_browser_automation_code(code):
+            return False
+
+        if (os.getenv("BFF_ALLOW_PY_BROWSER_AUTOMATION", "").strip().lower()
+            in {"1", "true", "yes", "on"}):
+            return False
+
+        if self._user_explicitly_requests_python_browser_script():
+            return False
+
+        return True
 
     async def _handle_special_tool(self, name: str, result: Any, **kwargs):
         """Handle special tool execution and state changes"""
