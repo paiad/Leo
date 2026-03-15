@@ -173,3 +173,9 @@ class RuntimeObservabilityService:
             },
             "daily": daily_rows,
         }
+
+    def purge_legacy_events(self) -> int:
+        deleter = getattr(self._store, "delete_legacy_mcp_routing_events", None)
+        if not callable(deleter):
+            return 0
+        return int(deleter() or 0)

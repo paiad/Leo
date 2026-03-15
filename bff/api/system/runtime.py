@@ -27,3 +27,9 @@ async def get_mcp_routing_dashboard(
     days: int = Query(default=7, ge=1, le=30),
 ) -> dict:
     return ok(runtime_observability_service.dashboard(days=days))
+
+
+@router.delete('/mcp-routing/legacy')
+async def purge_legacy_mcp_routing_events() -> dict:
+    deleted_count = runtime_observability_service.purge_legacy_events()
+    return ok({"deletedCount": deleted_count})
