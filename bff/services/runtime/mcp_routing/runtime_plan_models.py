@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -66,12 +66,12 @@ class PlannerOutput(BaseModel):
         return self
 
 
-class PrefilterResult(BaseModel):
+class RetrievalResult(BaseModel):
     intent: str
-    need_mcp: bool
     candidate_servers: list[str] = Field(default_factory=list)
     candidate_tools: dict[str, list[str]] = Field(default_factory=dict)
-    rule_fallback: PlannerFallback
+    candidate_tool_profiles: dict[str, dict[str, dict[str, Any]]] = Field(default_factory=dict)
+    fallback: PlannerFallback
 
 
 @dataclass
@@ -93,9 +93,10 @@ class PlanValidationResult:
 class PlanningDecision:
     execute_plan: PlannerOutput
     execute_source: Literal["planner", "rule", "no_mcp"]
-    prefilter: PrefilterResult
+    retrieval: RetrievalResult
     planner_plan: PlannerOutput | None = None
     planner_raw_json: dict[str, Any] | None = None
     gate_error_code: str | None = None
     gate_error_message: str | None = None
     shadow_only: bool = False
+    timing_ms: dict[str, int] = field(default_factory=dict)

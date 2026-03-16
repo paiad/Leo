@@ -1,19 +1,47 @@
+from bff.domain.models import McpDiscoveredTool, McpServerRecord
+from bff.repositories.store import InMemoryStore
 from bff.services.runtime.mcp_routing.runtime_plan_models import (
     ERROR_SERVER_NOT_ALLOWED,
     ERROR_TOOL_NOT_ALLOWED,
-    PrefilterResult,
     PlannerFallback,
+    RetrievalResult,
 )
 from bff.services.runtime.mcp_routing.runtime_plan_validator import RuntimeMcpPlanValidator
 
 
-def _prefilter() -> PrefilterResult:
-    return PrefilterResult(
+def _store() -> InMemoryStore:
+    store = InMemoryStore(enable_persistence=False)
+    store.mcp_servers["playwright"] = McpServerRecord(
+        serverId="playwright",
+        name="playwright",
+        type="stdio",
+        command="dummy",
+        enabled=True,
+        discoveredTools=[
+            McpDiscoveredTool(
+                name="browser_navigate",
+                description="navigate",
+                inputSchema={"type": "object", "properties": {"url": {"type": "string"}}},
+                enabled=True,
+            ),
+            McpDiscoveredTool(
+                name="browser_click",
+                description="click",
+                inputSchema={"type": "object", "properties": {"selector": {"type": "string"}}},
+                enabled=True,
+            ),
+        ],
+    )
+    return store
+
+
+def _retrieval() -> RetrievalResult:
+    return RetrievalResult(
         intent="browser_automation",
-        need_mcp=True,
         candidate_servers=["playwright"],
         candidate_tools={"playwright": ["browser_navigate", "browser_click"]},
-        rule_fallback=PlannerFallback(
+        candidate_tool_profiles={},
+        fallback=PlannerFallback(
             mode="rule_route",
             server_id="playwright",
             tool_name="browser_navigate",
@@ -23,7 +51,7 @@ def _prefilter() -> PrefilterResult:
 
 
 def test_plan_validator_accepts_prefixed_tool_name():
-    validator = RuntimeMcpPlanValidator(store=None)
+    validator = RuntimeMcpPlanValidator(store=_store())
     result = validator.validate(
         {
             "version": "mcp-plan.v1",
@@ -45,7 +73,7 @@ def test_plan_validator_accepts_prefixed_tool_name():
                 "reason": "fallback",
             },
         },
-        prefilter=_prefilter(),
+        retrieval=_retrieval(),
     )
 
     assert result.plan is not None
@@ -53,7 +81,7 @@ def test_plan_validator_accepts_prefixed_tool_name():
 
 
 def test_plan_validator_blocks_unknown_server():
-    validator = RuntimeMcpPlanValidator(store=None)
+    validator = RuntimeMcpPlanValidator(store=_store())
     result = validator.validate(
         {
             "version": "mcp-plan.v1",
@@ -75,7 +103,7 @@ def test_plan_validator_blocks_unknown_server():
                 "reason": "fallback",
             },
         },
-        prefilter=_prefilter(),
+        retrieval=_retrieval(),
     )
 
     assert result.plan is None
@@ -83,7 +111,7 @@ def test_plan_validator_blocks_unknown_server():
 
 
 def test_plan_validator_blocks_unknown_tool():
-    validator = RuntimeMcpPlanValidator(store=None)
+    validator = RuntimeMcpPlanValidator(store=_store())
     result = validator.validate(
         {
             "version": "mcp-plan.v1",
@@ -105,7 +133,7 @@ def test_plan_validator_blocks_unknown_tool():
                 "reason": "fallback",
             },
         },
-        prefilter=_prefilter(),
+        retrieval=_retrieval(),
     )
 
     assert result.plan is None

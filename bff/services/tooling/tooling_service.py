@@ -584,6 +584,42 @@ class ToolingService:
             except Exception:
                 pass
 
+    async def auto_discover_enabled_servers(self, *, only_if_empty: bool = True, limit: int = 20) -> dict[str, object]:
+        """
+        Auto-discover tools for enabled servers.
+
+        This is intended for startup indexing: Retrieval-First relies on discoveredTools
+        being populated at least once for each MCP server.
+        """
+        servers = list((self._store.mcp_servers or {}).values())
+        enabled = [s for s in servers if getattr(s, "enabled", False)]
+        targets = []
+        for server in sorted(enabled, key=lambda s: str(getattr(s, "serverId", ""))):
+            sid = str(getattr(server, "serverId", "") or "").strip().lower()
+            if not sid:
+                continue
+            tools = getattr(server, "discoveredTools", []) or []
+            if only_if_empty and len(tools) > 0:
+                continue
+            targets.append(sid)
+        targets = targets[: max(0, int(limit or 0))]
+
+        discovered: list[str] = []
+        failed: list[dict[str, str]] = []
+        for sid in targets:
+            try:
+                result = await self.discover_mcp_server_tools(sid)
+                if result is not None:
+                    discovered.append(sid)
+            except Exception as exc:
+                failed.append({"server_id": sid, "error": str(exc)})
+
+        return {
+            "targets": targets,
+            "discovered": discovered,
+            "failed": failed,
+        }
+
     def list_mcp_server_tools(self, server_id: str) -> list[dict] | None:
         record = self._store.mcp_servers.get(server_id)
         if not record:

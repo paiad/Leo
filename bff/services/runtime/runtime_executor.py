@@ -11,6 +11,7 @@ from app.agent.manus import Manus
 from app.logger import logger
 from app.tool.tool_collection import ToolCollection
 from bff.services.runtime.mcp_routing.runtime_mcp_router import RuntimeMcpRouter
+from bff.services.runtime.mcp_routing.runtime_logviz import render_ascii_box
 from bff.services.runtime.mcp_routing.runtime_plan_models import PlannerStep
 from bff.services.runtime.mcp_routing.runtime_planning import RuntimeMcpPlanningOrchestrator
 from bff.services.runtime.runtime_policy import RuntimePolicy
@@ -73,6 +74,15 @@ class RuntimeExecutor:
         run_state: dict[str, bool],
     ) -> RuntimeExecutionResult:
         turn_started = time.perf_counter()
+        timing_ms: dict[str, int] = {
+            "connect_ms": 0,
+            "agent_run_ms": 0,
+            "agent_runs": 0,
+            "planning_total_ms": 0,
+            "planning_retrieval_ms": 0,
+            "planning_planner_ms": 0,
+            "planning_gatekeeper_ms": 0,
+        }
         await emit_progress(
             progress_callback,
             {
@@ -91,6 +101,7 @@ class RuntimeExecutor:
             reuse_agent=reuse_agent,
             shared_agent_lock=shared_agent_lock,
             run_state=run_state,
+            timing_ms=timing_ms,
         )
 
         raw = await self._enforce_expected_steps(
@@ -106,6 +117,7 @@ class RuntimeExecutor:
             progress_callback=progress_callback,
             emit_progress=emit_progress,
             run_state=run_state,
+            timing_ms=timing_ms,
         )
 
         elapsed_ms = int((time.perf_counter() - turn_started) * 1000)
@@ -117,6 +129,32 @@ class RuntimeExecutor:
             latency_ms=elapsed_ms,
             success=bool((raw or "").strip()),
         )
+
+        # Important: when reusing an agent across requests, disconnect MCP sessions
+        # at the end of the turn. Some MCP transports (notably streamablehttp/anyio)
+        # require enter/exit to happen in the same asyncio task; persisting sessions
+        # across requests can lead to cancel-scope errors during cleanup.
+        if reuse_agent:
+            try:
+                await agent.disconnect_mcp_server()
+            except Exception as exc:
+                logger.warning(f"Failed to disconnect MCP servers after turn, ignored: {exc}")
+
+        if self._policy.is_truthy_env(os.getenv("BFF_RUNTIME_TIMING_LOG_ENABLED", "1")):
+            total_ms = int((time.perf_counter() - turn_started) * 1000)
+            lines = [
+                f"turn.total_ms: {total_ms}",
+                (
+                    "planning_ms: "
+                    f"total={timing_ms.get('planning_total_ms', 0)}, "
+                    f"retrieval={timing_ms.get('planning_retrieval_ms', 0)}, "
+                    f"planner={timing_ms.get('planning_planner_ms', 0)}, "
+                    f"gatekeeper={timing_ms.get('planning_gatekeeper_ms', 0)}"
+                ),
+                f"connect_ms: {timing_ms.get('connect_ms', 0)}",
+                f"agent_run_ms: {timing_ms.get('agent_run_ms', 0)} (runs={timing_ms.get('agent_runs', 0)})",
+            ]
+            logger.info("\n" + render_ascii_box("RUNTIME TIMING (ACT)", lines))
 
         return RuntimeExecutionResult(
             raw=raw,
@@ -134,21 +172,27 @@ class RuntimeExecutor:
         reuse_agent: bool,
         shared_agent_lock: asyncio.Lock,
         run_state: dict[str, bool],
+        timing_ms: dict[str, int],
     ) -> RuntimeExecutionResult:
         async def _inner() -> RuntimeExecutionResult:
             if not self._planning:
+                connect_started = time.perf_counter()
                 connected_servers = await self._mcp_router.connect_enabled_mcp_servers(
                     agent,
                     prompt,
                     session_id=session_id,
                 )
+                timing_ms["connect_ms"] += int((time.perf_counter() - connect_started) * 1000)
                 run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(prompt)
+                agent_started = time.perf_counter()
                 raw = await self._run_agent(
                     agent=agent,
                     run_prompt=run_prompt,
                     time_budget_seconds=time_budget_seconds,
                     run_state=run_state,
                 )
+                timing_ms["agent_run_ms"] += int((time.perf_counter() - agent_started) * 1000)
+                timing_ms["agent_runs"] += 1
                 expected_steps = [(server_id, "auto") for server_id in (connected_servers or [])]
                 return RuntimeExecutionResult(
                     raw=raw,
@@ -157,6 +201,14 @@ class RuntimeExecutor:
                 )
 
             decision = await self._planning.decide(prompt, session_id=session_id)
+            for key in (
+                "planning_total_ms",
+                "planning_retrieval_ms",
+                "planning_planner_ms",
+                "planning_gatekeeper_ms",
+            ):
+                if key in decision.timing_ms:
+                    timing_ms[key] = int(decision.timing_ms.get(key) or 0)
             plan = decision.execute_plan
             multi_step_enabled = self._policy.is_truthy_env(
                 os.getenv("BFF_RUNTIME_MULTI_STEP_EXECUTION", "0")
@@ -179,12 +231,15 @@ class RuntimeExecutor:
                 except Exception as exc:
                     logger.warning(f"Failed to disconnect MCP servers for no_mcp turn, ignored: {exc}")
                 run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(prompt)
+                agent_started = time.perf_counter()
                 raw = await self._run_agent(
                     agent=agent,
                     run_prompt=run_prompt,
                     time_budget_seconds=time_budget_seconds,
                     run_state=run_state,
                 )
+                timing_ms["agent_run_ms"] += int((time.perf_counter() - agent_started) * 1000)
+                timing_ms["agent_runs"] += 1
                 return RuntimeExecutionResult(raw=raw, connected_servers=[])
 
             if multi_step_enabled and len(plan.plan_steps) > 1:
@@ -201,6 +256,7 @@ class RuntimeExecutor:
                     fallback_tool_name=plan.fallback.tool_name,
                     time_budget_seconds=time_budget_seconds,
                     run_state=run_state,
+                    timing_ms=timing_ms,
                 )
 
             step = plan.plan_steps[0]
@@ -212,6 +268,7 @@ class RuntimeExecutor:
                 agent=agent,
                 server_ids=[step.server_id],
                 connected_servers=[],
+                timing_ms=timing_ms,
             )
             step_prompt = self._policy.build_plan_step_prompt(
                 prompt,
@@ -224,12 +281,15 @@ class RuntimeExecutor:
                 retry=False,
             )
             run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(step_prompt)
+            agent_started = time.perf_counter()
             raw = await self._run_agent(
                 agent=agent,
                 run_prompt=run_prompt,
                 time_budget_seconds=time_budget_seconds,
                 run_state=run_state,
             )
+            timing_ms["agent_run_ms"] += int((time.perf_counter() - agent_started) * 1000)
+            timing_ms["agent_runs"] += 1
             return RuntimeExecutionResult(
                 raw=raw,
                 connected_servers=connected_servers,
@@ -253,6 +313,7 @@ class RuntimeExecutor:
         fallback_tool_name: str | None,
         time_budget_seconds: int,
         run_state: dict[str, bool],
+        timing_ms: dict[str, int],
     ) -> RuntimeExecutionResult:
         connected_servers: list[str] = []
         expected_steps: list[tuple[str, str]] = []
@@ -268,6 +329,7 @@ class RuntimeExecutor:
                 agent=agent,
                 server_ids=[step.server_id],
                 connected_servers=connected_servers,
+                timing_ms=timing_ms,
             )
 
             before_count = len(agent.messages)
@@ -282,12 +344,15 @@ class RuntimeExecutor:
                 retry=False,
             )
             run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(step_prompt)
+            agent_started = time.perf_counter()
             raw = await self._run_agent(
                 agent=agent,
                 run_prompt=run_prompt,
                 time_budget_seconds=time_budget_seconds,
                 run_state=run_state,
             )
+            timing_ms["agent_run_ms"] += int((time.perf_counter() - agent_started) * 1000)
+            timing_ms["agent_runs"] += 1
 
             delta_messages = list(agent.messages[before_count:])
             step_done = self._is_step_done(delta_messages, step.server_id, step.tool_name)
@@ -309,12 +374,15 @@ class RuntimeExecutor:
                     retry=True,
                 )
                 retry_run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(retry_prompt)
+                retry_started = time.perf_counter()
                 raw = await self._run_agent(
                     agent=agent,
                     run_prompt=retry_run_prompt,
                     time_budget_seconds=time_budget_seconds,
                     run_state=run_state,
                 )
+                timing_ms["agent_run_ms"] += int((time.perf_counter() - retry_started) * 1000)
+                timing_ms["agent_runs"] += 1
                 retry_delta = list(agent.messages[retry_before:])
                 step_done = self._is_step_done(retry_delta, step.server_id, step.tool_name)
 
@@ -328,6 +396,7 @@ class RuntimeExecutor:
                     agent=agent,
                     server_ids=[fallback_server_id],
                     connected_servers=connected_servers,
+                    timing_ms=timing_ms,
                 )
                 fallback_prompt = self._policy.build_forced_server_retry_prompt(
                     prompt,
@@ -335,12 +404,15 @@ class RuntimeExecutor:
                     tool_name=fallback_tool_name,
                 )
                 fallback_run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(fallback_prompt)
+                fallback_started = time.perf_counter()
                 raw = await self._run_agent(
                     agent=agent,
                     run_prompt=fallback_run_prompt,
                     time_budget_seconds=time_budget_seconds,
                     run_state=run_state,
                 )
+                timing_ms["agent_run_ms"] += int((time.perf_counter() - fallback_started) * 1000)
+                timing_ms["agent_runs"] += 1
 
             expected_steps.append((step.server_id, step.tool_name))
             self._record_step_outcome(
@@ -373,6 +445,7 @@ class RuntimeExecutor:
         progress_callback: Callable[[dict[str, Any]], Any] | None,
         emit_progress: Callable[[Callable[[dict[str, Any]], Any] | None, dict[str, Any]], Any],
         run_state: dict[str, bool],
+        timing_ms: dict[str, int],
     ) -> str:
         if not expected_steps:
             return initial_raw
@@ -392,18 +465,24 @@ class RuntimeExecutor:
 
             async def _inner_retry() -> str:
                 if server_id not in connected_servers:
+                    connect_started = time.perf_counter()
                     connected = await self._mcp_router.connect_server_by_id(agent, server_id)
+                    timing_ms["connect_ms"] += int((time.perf_counter() - connect_started) * 1000)
                     if connected:
                         connected_servers.append(server_id)
                     logger.info(
                         f"Forced {server_id} connection during retry: connected={connected}"
                     )
-                return await self._run_agent(
+                agent_started = time.perf_counter()
+                result = await self._run_agent(
                     agent=agent,
                     run_prompt=retry_run_prompt,
                     time_budget_seconds=time_budget_seconds,
                     run_state=run_state,
                 )
+                timing_ms["agent_run_ms"] += int((time.perf_counter() - agent_started) * 1000)
+                timing_ms["agent_runs"] += 1
+                return result
 
             return await self._run_with_optional_lock(
                 reuse_agent=reuse_agent,
@@ -441,6 +520,7 @@ class RuntimeExecutor:
         agent: Manus,
         server_ids: list[str],
         connected_servers: list[str],
+        timing_ms: dict[str, int],
     ) -> list[str]:
         unique_ids: list[str] = []
         for sid in server_ids:
@@ -453,7 +533,9 @@ class RuntimeExecutor:
         for server_id in unique_ids:
             if server_id in current:
                 continue
+            connect_started = time.perf_counter()
             connected = await self._mcp_router.connect_server_by_id(agent, server_id)
+            timing_ms["connect_ms"] += int((time.perf_counter() - connect_started) * 1000)
             if connected:
                 current.append(server_id)
         return current

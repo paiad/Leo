@@ -155,7 +155,8 @@ class MCPClientTool(BaseTool):
                 return ToolResult(error=output_text)
             return ToolResult(output=output_text)
         except Exception as e:
-            return ToolResult(error=f"Error executing tool: {str(e)}")
+            message = str(e) if str(e) else repr(e)
+            return ToolResult(error=f"Error executing tool ({type(e).__name__}): {message}")
 
 
 class MCPClients(ToolCollection):

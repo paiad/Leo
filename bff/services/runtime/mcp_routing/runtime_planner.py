@@ -9,7 +9,7 @@ from app.logger import logger
 from bff.services.runtime.mcp_routing.runtime_plan_models import (
     ERROR_INVALID_JSON,
     PlannerRawResult,
-    PrefilterResult,
+    RetrievalResult,
 )
 from bff.services.runtime.runtime_policy import RuntimePolicy
 
@@ -21,11 +21,14 @@ class RuntimeMcpPlanner:
     )
 
     def __init__(self, llm: LLM | None = None):
-        self._llm = llm or LLM()
+        # Use a dedicated LLM profile for planning when available.
+        # Configure via `config/config.toml` section `[llm.planner]`.
+        # Falls back to `[llm]` default when the profile is not present.
+        self._llm = llm or LLM(config_name="planner")
 
-    async def create_plan(self, prompt: str, prefilter: PrefilterResult) -> PlannerRawResult:
+    async def create_plan(self, prompt: str, retrieval: RetrievalResult) -> PlannerRawResult:
         user_request = RuntimePolicy.extract_current_user_request(prompt).strip()
-        planner_prompt = self._build_planner_prompt(user_request, prefilter)
+        planner_prompt = self._build_planner_prompt(user_request, retrieval)
 
         try:
             response = await self._llm.ask(
@@ -55,24 +58,24 @@ class RuntimeMcpPlanner:
         return PlannerRawResult(raw_text=response, parsed_json=parsed)
 
     @staticmethod
-    def _build_planner_prompt(user_request: str, prefilter: PrefilterResult) -> str:
+    def _build_planner_prompt(user_request: str, retrieval: RetrievalResult) -> str:
         payload = {
             "version": "mcp-plan.v1",
             "request": user_request,
-            "prefilter": {
-                "intent": prefilter.intent,
-                "need_mcp": prefilter.need_mcp,
-                "candidate_servers": prefilter.candidate_servers,
-                "candidate_tools": prefilter.candidate_tools,
-                "rule_fallback": prefilter.rule_fallback.model_dump(mode="json"),
+            "retrieval": {
+                "intent": retrieval.intent,
+                "candidate_servers": retrieval.candidate_servers,
+                "candidate_tools": retrieval.candidate_tools,
+                "candidate_tool_profiles": retrieval.candidate_tool_profiles,
+                "fallback": retrieval.fallback.model_dump(mode="json"),
             },
             "output_contract": {
                 "need_mcp": "boolean",
                 "plan_steps": [
                     {
                         "goal": "string",
-                        "server_id": "must be in candidate_servers",
-                        "tool_name": "must be in candidate_tools[server_id] when non-empty",
+                        "server_id": "string; prefer candidate_servers",
+                        "tool_name": "string; prefer candidate_tools[server_id] when non-empty; use 'auto' if unsure",
                         "args_hint": "object",
                         "confidence": "number in [0,1]",
                         "reason": "string",
@@ -90,6 +93,7 @@ class RuntimeMcpPlanner:
                 "do not use keys outside contract",
                 "if no MCP needed, set need_mcp=false and plan_steps=[]",
                 "prefer shortest correct plan",
+                "prefer using retrieved candidate servers/tools; only choose non-candidates when necessary",
             ],
         }
         return json.dumps(payload, ensure_ascii=False)

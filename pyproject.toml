@@ -56,6 +56,7 @@ dependencies = [
   "qdrant-client~=1.12.1",
   "chromadb~=0.5.23",
   "sentence-transformers~=3.4.1",
+  "torch",
   "rank-bm25~=0.2.2",
   "pypdf~=5.3.1",
   "python-docx~=1.1.2",
@@ -72,3 +73,21 @@ openmanus = "main:main"
 
 [tool.setuptools.packages.find]
 include = ["app*", "bff*"]
+
+[tool.uv]
+# Use the official PyTorch CUDA wheel index for GPU-enabled builds on supported platforms.
+#
+# Notes:
+# - This affects resolution/locking; `uv sync --frozen` will then install CUDA-enabled wheels (e.g. `+cu126`)
+#   instead of CPU-only wheels from PyPI.
+# - Requires an NVIDIA driver on Windows/Linux (no separate CUDA toolkit needed for pip wheels).
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
+torchaudio = { index = "pytorch-cu126" }

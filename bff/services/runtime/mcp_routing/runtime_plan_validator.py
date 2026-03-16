@@ -11,7 +11,7 @@ from bff.services.runtime.mcp_routing.runtime_plan_models import (
     ERROR_POLICY_BLOCKED,
     PlanValidationResult,
     PlannerOutput,
-    PrefilterResult,
+    RetrievalResult,
 )
 
 
@@ -23,7 +23,7 @@ class RuntimeMcpPlanValidator:
         self,
         planner_json: dict[str, Any],
         *,
-        prefilter: PrefilterResult,
+        retrieval: RetrievalResult,
     ) -> PlanValidationResult:
         try:
             plan = PlannerOutput.model_validate(planner_json)
@@ -40,33 +40,22 @@ class RuntimeMcpPlanValidator:
                 error_message=str(exc),
             )
 
-        allowed_servers = set(prefilter.candidate_servers)
-        allowed_tools = {
-            sid: {self._canonical_tool_name(sid, name) for name in names}
-            for sid, names in prefilter.candidate_tools.items()
-        }
-
         for step in plan.plan_steps:
-            if step.server_id not in allowed_servers:
+            if not self._server_exists_and_enabled(step.server_id):
                 return PlanValidationResult(
                     plan=None,
                     error_code=ERROR_SERVER_NOT_ALLOWED,
                     error_message=f"server not allowed: {step.server_id}",
                 )
 
-            whitelist = allowed_tools.get(step.server_id, set())
-            if whitelist:
-                canonical = self._canonical_tool_name(step.server_id, step.tool_name)
-                if canonical not in whitelist:
-                    return PlanValidationResult(
-                        plan=None,
-                        error_code=ERROR_TOOL_NOT_ALLOWED,
-                        error_message=(
-                            f"tool not allowed: {step.tool_name} for server {step.server_id}"
-                        ),
-                    )
+            if not self._tool_exists(step.server_id, step.tool_name):
+                return PlanValidationResult(
+                    plan=None,
+                    error_code=ERROR_TOOL_NOT_ALLOWED,
+                    error_message=f"tool not allowed: {step.tool_name} for server {step.server_id}",
+                )
 
-            if self._is_policy_blocked(intent=prefilter.intent, server_id=step.server_id):
+            if self._is_policy_blocked(intent=retrieval.intent, server_id=step.server_id):
                 return PlanValidationResult(
                     plan=None,
                     error_code=ERROR_POLICY_BLOCKED,
@@ -118,3 +107,31 @@ class RuntimeMcpPlanValidator:
         if sid and name.startswith(prefix):
             return name[len(prefix) :]
         return name
+
+    def _server_exists_and_enabled(self, server_id: str) -> bool:
+        if not self._store:
+            return True
+        servers = getattr(self._store, "mcp_servers", {}) or {}
+        server = servers.get(server_id)
+        if not server:
+            return False
+        return bool(getattr(server, "enabled", False))
+
+    def _tool_exists(self, server_id: str, tool_name: str) -> bool:
+        canonical = self._canonical_tool_name(server_id, tool_name)
+        if not canonical or canonical == "auto":
+            return True
+        if not self._store:
+            return True
+        servers = getattr(self._store, "mcp_servers", {}) or {}
+        server = servers.get(server_id)
+        if not server:
+            return False
+        discovered = getattr(server, "discoveredTools", []) or []
+        for tool in discovered:
+            if getattr(tool, "enabled", True) is False:
+                continue
+            name = str(getattr(tool, "name", "") or "").strip().lower()
+            if name == canonical:
+                return True
+        return False

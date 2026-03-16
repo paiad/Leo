@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import time
 from typing import Any
 
 from app.logger import logger
@@ -13,18 +14,18 @@ from bff.services.runtime.mcp_routing.runtime_plan_models import (
     PlannerFallback,
     PlannerOutput,
     PlannerStep,
-    PrefilterResult,
+    RetrievalResult,
 )
 from bff.services.runtime.mcp_routing.runtime_planner import RuntimeMcpPlanner
-from bff.services.runtime.mcp_routing.runtime_prefilter import RuntimeMcpPrefilter
 from bff.services.runtime.mcp_routing.runtime_plan_validator import RuntimeMcpPlanValidator
+from bff.services.runtime.mcp_routing.runtime_tool_retriever import RuntimeMcpToolRetriever
 
 
 class RuntimeMcpPlanningOrchestrator:
     def __init__(self, *, router: RuntimeMcpRouter, store: Any | None = None):
         self._router = router
         self._store = store
-        self._prefilter = RuntimeMcpPrefilter(router=router, store=store)
+        self._retriever = RuntimeMcpToolRetriever(router=router, store=store)
         self._planner = RuntimeMcpPlanner()
         self._validator = RuntimeMcpPlanValidator(store=store)
 
@@ -44,11 +45,27 @@ class RuntimeMcpPlanningOrchestrator:
     def _should_render_box_logs(self) -> bool:
         return self._is_truthy_env(os.getenv("BFF_RUNTIME_BOX_LOG_ENABLED", "1"))
 
+    def _should_render_timing_logs(self) -> bool:
+        return self._is_truthy_env(os.getenv("BFF_RUNTIME_TIMING_LOG_ENABLED", "1"))
+
+    def _log_timing_box(self, request_preview: str, timing_ms: dict[str, int]) -> None:
+        if not self._should_render_timing_logs():
+            return
+
+        lines = [
+            f"request: {request_preview or '<empty>'}",
+            f"planning.total_ms: {timing_ms.get('planning_total_ms', 0)}",
+            f"planning.retrieval_ms: {timing_ms.get('planning_retrieval_ms', 0)}",
+            f"planning.planner_ms: {timing_ms.get('planning_planner_ms', 0)}",
+            f"planning.gatekeeper_ms: {timing_ms.get('planning_gatekeeper_ms', 0)}",
+        ]
+        logger.info("\n" + render_ascii_box("MCP TIMING (PLAN)", lines))
+
     def _log_routing_box(
         self,
         *,
         request_preview: str,
-        prefilter: PrefilterResult,
+        retrieval: RetrievalResult,
         planner_enabled: bool,
         strict_json: bool,
         shadow_only: bool,
@@ -65,9 +82,8 @@ class RuntimeMcpPlanningOrchestrator:
         fallback = execute_plan.fallback
         lines = [
             f"request: {request_preview or '<empty>'}",
-            f"intent: {prefilter.intent}",
-            f"prefilter.need_mcp: {prefilter.need_mcp}",
-            f"prefilter.candidates: {prefilter.candidate_servers or []}",
+            f"intent: {retrieval.intent}",
+            f"retrieval.candidates: {retrieval.candidate_servers or []}",
             (
                 "planner.flags: "
                 f"enabled={planner_enabled}, strict_json={strict_json}, shadow_only={shadow_only}"
@@ -101,21 +117,14 @@ class RuntimeMcpPlanningOrchestrator:
         except Exception as exc:
             logger.warning(f"Failed to persist planner routing event: {exc}")
 
-    def _build_rule_plan(self, prefilter: PrefilterResult) -> PlannerOutput:
-        fallback = prefilter.rule_fallback
-        if not prefilter.need_mcp:
-            return PlannerOutput(
-                need_mcp=False,
-                plan_steps=[],
-                fallback=PlannerFallback(mode="no_mcp", reason="prefilter indicates no MCP required"),
-            )
-
-        server_id = fallback.server_id or (prefilter.candidate_servers[0] if prefilter.candidate_servers else "")
+    def _build_rule_plan(self, retrieval: RetrievalResult) -> PlannerOutput:
+        fallback = retrieval.fallback
+        server_id = fallback.server_id or (retrieval.candidate_servers[0] if retrieval.candidate_servers else "")
         if not server_id:
             return PlannerOutput(
                 need_mcp=False,
                 plan_steps=[],
-                fallback=PlannerFallback(mode="no_mcp", reason="no enabled MCP candidates"),
+                fallback=PlannerFallback(mode="no_mcp", reason="no retrieval candidates"),
             )
 
         tool_name = fallback.tool_name or "auto"
@@ -123,18 +132,19 @@ class RuntimeMcpPlanningOrchestrator:
             need_mcp=True,
             plan_steps=[
                 PlannerStep(
-                    goal="Route with rule fallback",
+                    goal="Route with retrieval fallback",
                     server_id=server_id,
                     tool_name=tool_name,
                     args_hint={},
                     confidence=1.0,
-                    reason="rule prefilter fallback",
+                    reason="retrieval fallback",
                 )
             ],
             fallback=fallback,
         )
 
     async def decide(self, prompt: str, *, session_id: str | None = None) -> PlanningDecision:
+        started = time.perf_counter()
         planner_enabled = self._is_truthy_env(os.getenv("BFF_RUNTIME_PLANNER_ENABLED", "1"))
         strict_json = self._is_truthy_env(os.getenv("BFF_RUNTIME_STRICT_JSON_VALIDATION", "1"))
         shadow_only = self._is_truthy_env(os.getenv("BFF_RUNTIME_PLANNER_SHADOW_ONLY", "0"))
@@ -144,44 +154,69 @@ class RuntimeMcpPlanningOrchestrator:
         prompt_hash = self._hash_prompt(prompt_text)
         request_preview = self._router.request_preview(prompt)
 
-        prefilter = self._prefilter.build(prompt)
-        rule_plan = self._build_rule_plan(prefilter)
+        retrieval_started = time.perf_counter()
+        retrieval_output = self._retriever.retrieve(prompt)
+        retrieval_ms = int((time.perf_counter() - retrieval_started) * 1000)
+        retrieval = RetrievalResult(
+            intent=retrieval_output.intent,
+            candidate_servers=list(retrieval_output.candidate_servers),
+            candidate_tools=dict(retrieval_output.candidate_tools),
+            candidate_tool_profiles=dict(retrieval_output.candidate_tool_profiles),
+            fallback=(
+                PlannerFallback(
+                    mode=("rule_route" if retrieval_output.fallback_server_id else "no_mcp"),
+                    server_id=retrieval_output.fallback_server_id,
+                    tool_name=retrieval_output.fallback_tool_name,
+                    reason=("retrieval fallback" if retrieval_output.fallback_server_id else "no retrieval candidates"),
+                )
+            ),
+        )
+        rule_plan = self._build_rule_plan(retrieval)
         logger.info(
-            "MCP planning prefilter: "
-            f"intent={prefilter.intent}, "
-            f"need_mcp={prefilter.need_mcp}, "
-            f"candidates={prefilter.candidate_servers}, "
-            f"fallback={prefilter.rule_fallback.server_id}/{prefilter.rule_fallback.tool_name}, "
+            "MCP planning retrieval: "
+            f"intent={retrieval.intent}, "
+            f"candidates={retrieval.candidate_servers}, "
+            f"fallback={retrieval.fallback.server_id}/{retrieval.fallback.tool_name}, "
             f"request='{request_preview}'"
         )
 
         self._record(
             {
-                "event_type": "prefilter",
+                "event_type": "retrieval",
                 "session_id": session_id,
                 "prompt_hash": prompt_hash,
-                "intent": prefilter.intent,
-                "selected_server_id": prefilter.rule_fallback.server_id,
-                "candidate_servers": list(prefilter.candidate_servers),
+                "intent": retrieval.intent,
+                "selected_server_id": retrieval.fallback.server_id,
+                "candidate_servers": list(retrieval.candidate_servers),
                 "scores": {
-                    "need_mcp": prefilter.need_mcp,
-                    "candidate_tools": prefilter.candidate_tools,
+                    "candidate_tools": retrieval.candidate_tools,
+                    "candidate_tool_profiles": retrieval.candidate_tool_profiles,
                     "request_preview": request_preview,
                 },
                 "connected_servers": [],
             }
         )
 
+        planner_ms = 0
+        gatekeeper_ms = 0
+
         if not planner_enabled:
             logger.info("MCP planning: planner disabled, execute_source=rule/no_mcp")
+            timing_ms = {
+                "planning_total_ms": int((time.perf_counter() - started) * 1000),
+                "planning_retrieval_ms": retrieval_ms,
+                "planning_planner_ms": planner_ms,
+                "planning_gatekeeper_ms": gatekeeper_ms,
+            }
             decision = PlanningDecision(
                 execute_plan=rule_plan,
                 execute_source=("no_mcp" if not rule_plan.need_mcp else "rule"),
-                prefilter=prefilter,
+                retrieval=retrieval,
+                timing_ms=timing_ms,
             )
             self._log_routing_box(
                 request_preview=request_preview,
-                prefilter=prefilter,
+                retrieval=retrieval,
                 planner_enabled=planner_enabled,
                 strict_json=strict_json,
                 shadow_only=shadow_only,
@@ -192,18 +227,26 @@ class RuntimeMcpPlanningOrchestrator:
                 gate_ok=None,
                 gate_error=None,
             )
+            self._log_timing_box(request_preview, timing_ms)
             return decision
 
-        if not prefilter.need_mcp:
-            logger.info("MCP planning: prefilter indicates no MCP needed, execute_source=no_mcp")
+        if not retrieval.candidate_servers:
+            logger.info("MCP planning: retrieval has no candidates, execute_source=no_mcp")
+            timing_ms = {
+                "planning_total_ms": int((time.perf_counter() - started) * 1000),
+                "planning_retrieval_ms": retrieval_ms,
+                "planning_planner_ms": planner_ms,
+                "planning_gatekeeper_ms": gatekeeper_ms,
+            }
             decision = PlanningDecision(
                 execute_plan=rule_plan,
                 execute_source="no_mcp",
-                prefilter=prefilter,
+                retrieval=retrieval,
+                timing_ms=timing_ms,
             )
             self._log_routing_box(
                 request_preview=request_preview,
-                prefilter=prefilter,
+                retrieval=retrieval,
                 planner_enabled=planner_enabled,
                 strict_json=strict_json,
                 shadow_only=shadow_only,
@@ -214,9 +257,12 @@ class RuntimeMcpPlanningOrchestrator:
                 gate_ok=None,
                 gate_error=None,
             )
+            self._log_timing_box(request_preview, timing_ms)
             return decision
 
-        planner_raw = await self._planner.create_plan(prompt, prefilter)
+        planner_started = time.perf_counter()
+        planner_raw = await self._planner.create_plan(prompt, retrieval)
+        planner_ms = int((time.perf_counter() - planner_started) * 1000)
         if planner_raw.parsed_json is None:
             logger.warning(
                 "MCP planning: planner JSON invalid, will fail-closed to rule fallback; "
@@ -232,9 +278,9 @@ class RuntimeMcpPlanningOrchestrator:
                 "event_type": "planner",
                 "session_id": session_id,
                 "prompt_hash": prompt_hash,
-                "intent": prefilter.intent,
+                "intent": retrieval.intent,
                 "selected_server_id": None,
-                "candidate_servers": list(prefilter.candidate_servers),
+                "candidate_servers": list(retrieval.candidate_servers),
                 "scores": {
                     "raw_preview": planner_raw.raw_text[:800],
                     "error_code": planner_raw.error_code,
@@ -245,14 +291,20 @@ class RuntimeMcpPlanningOrchestrator:
         )
 
         if planner_raw.parsed_json is None:
+            timing_ms = {
+                "planning_total_ms": int((time.perf_counter() - started) * 1000),
+                "planning_retrieval_ms": retrieval_ms,
+                "planning_planner_ms": planner_ms,
+                "planning_gatekeeper_ms": gatekeeper_ms,
+            }
             self._record(
                 {
                     "event_type": "gatekeeper",
                     "session_id": session_id,
                     "prompt_hash": prompt_hash,
-                    "intent": prefilter.intent,
-                    "selected_server_id": prefilter.rule_fallback.server_id,
-                    "candidate_servers": list(prefilter.candidate_servers),
+                    "intent": retrieval.intent,
+                    "selected_server_id": retrieval.fallback.server_id,
+                    "candidate_servers": list(retrieval.candidate_servers),
                     "scores": {
                         "pass": False,
                         "error_code": planner_raw.error_code or ERROR_INVALID_JSON,
@@ -265,14 +317,15 @@ class RuntimeMcpPlanningOrchestrator:
             decision = PlanningDecision(
                 execute_plan=rule_plan,
                 execute_source=("no_mcp" if not rule_plan.need_mcp else "rule"),
-                prefilter=prefilter,
+                retrieval=retrieval,
                 planner_raw_json=None,
                 gate_error_code=planner_raw.error_code or ERROR_INVALID_JSON,
                 gate_error_message=planner_raw.error_message,
+                timing_ms=timing_ms,
             )
             self._log_routing_box(
                 request_preview=request_preview,
-                prefilter=prefilter,
+                retrieval=retrieval,
                 planner_enabled=planner_enabled,
                 strict_json=strict_json,
                 shadow_only=shadow_only,
@@ -283,13 +336,16 @@ class RuntimeMcpPlanningOrchestrator:
                 gate_ok=False,
                 gate_error=f"{planner_raw.error_code or ERROR_INVALID_JSON}: {planner_raw.error_message or ''}".strip(),
             )
+            self._log_timing_box(request_preview, timing_ms)
             return decision
 
+        gatekeeper_started = time.perf_counter()
         validation = (
-            self._validator.validate(planner_raw.parsed_json, prefilter=prefilter)
+            self._validator.validate(planner_raw.parsed_json, retrieval=retrieval)
             if strict_json
             else self._validator.validate_schema_only(planner_raw.parsed_json)
         )
+        gatekeeper_ms = int((time.perf_counter() - gatekeeper_started) * 1000)
         if validation.plan is None:
             logger.warning(
                 "MCP planning gatekeeper: rejected planner output, fail-closed to rule fallback; "
@@ -303,13 +359,13 @@ class RuntimeMcpPlanningOrchestrator:
                 "event_type": "gatekeeper",
                 "session_id": session_id,
                 "prompt_hash": prompt_hash,
-                "intent": prefilter.intent,
+                "intent": retrieval.intent,
                 "selected_server_id": (
                     validation.plan.plan_steps[0].server_id
                     if validation.plan and validation.plan.plan_steps
-                    else prefilter.rule_fallback.server_id
+                    else retrieval.fallback.server_id
                 ),
-                "candidate_servers": list(prefilter.candidate_servers),
+                "candidate_servers": list(retrieval.candidate_servers),
                 "scores": {
                     "pass": validation.plan is not None,
                     "error_code": validation.error_code,
@@ -321,17 +377,24 @@ class RuntimeMcpPlanningOrchestrator:
         )
 
         if validation.plan is None:
+            timing_ms = {
+                "planning_total_ms": int((time.perf_counter() - started) * 1000),
+                "planning_retrieval_ms": retrieval_ms,
+                "planning_planner_ms": planner_ms,
+                "planning_gatekeeper_ms": gatekeeper_ms,
+            }
             decision = PlanningDecision(
                 execute_plan=rule_plan,
                 execute_source=("no_mcp" if not rule_plan.need_mcp else "rule"),
-                prefilter=prefilter,
+                retrieval=retrieval,
                 planner_raw_json=planner_raw.parsed_json,
                 gate_error_code=validation.error_code,
                 gate_error_message=validation.error_message,
+                timing_ms=timing_ms,
             )
             self._log_routing_box(
                 request_preview=request_preview,
-                prefilter=prefilter,
+                retrieval=retrieval,
                 planner_enabled=planner_enabled,
                 strict_json=strict_json,
                 shadow_only=shadow_only,
@@ -342,23 +405,31 @@ class RuntimeMcpPlanningOrchestrator:
                 gate_ok=False,
                 gate_error=f"{validation.error_code or ''}: {validation.error_message or ''}".strip(),
             )
+            self._log_timing_box(request_preview, timing_ms)
             return decision
 
         if shadow_only:
             logger.info(
                 "MCP planning: shadow-only enabled, planner accepted but execute_source remains rule/no_mcp"
             )
+            timing_ms = {
+                "planning_total_ms": int((time.perf_counter() - started) * 1000),
+                "planning_retrieval_ms": retrieval_ms,
+                "planning_planner_ms": planner_ms,
+                "planning_gatekeeper_ms": gatekeeper_ms,
+            }
             decision = PlanningDecision(
                 execute_plan=rule_plan,
                 execute_source=("no_mcp" if not rule_plan.need_mcp else "rule"),
-                prefilter=prefilter,
+                retrieval=retrieval,
                 planner_plan=validation.plan,
                 planner_raw_json=planner_raw.parsed_json,
                 shadow_only=True,
+                timing_ms=timing_ms,
             )
             self._log_routing_box(
                 request_preview=request_preview,
-                prefilter=prefilter,
+                retrieval=retrieval,
                 planner_enabled=planner_enabled,
                 strict_json=strict_json,
                 shadow_only=shadow_only,
@@ -369,6 +440,7 @@ class RuntimeMcpPlanningOrchestrator:
                 gate_ok=True,
                 gate_error=None,
             )
+            self._log_timing_box(request_preview, timing_ms)
             return decision
 
         logger.info(
@@ -376,16 +448,23 @@ class RuntimeMcpPlanningOrchestrator:
             f"need_mcp={validation.plan.need_mcp}, "
             f"steps={[{'server': s.server_id, 'tool': s.tool_name, 'confidence': s.confidence} for s in validation.plan.plan_steps]}"
         )
+        timing_ms = {
+            "planning_total_ms": int((time.perf_counter() - started) * 1000),
+            "planning_retrieval_ms": retrieval_ms,
+            "planning_planner_ms": planner_ms,
+            "planning_gatekeeper_ms": gatekeeper_ms,
+        }
         decision = PlanningDecision(
             execute_plan=validation.plan,
             execute_source=("no_mcp" if not validation.plan.need_mcp else "planner"),
-            prefilter=prefilter,
+            retrieval=retrieval,
             planner_plan=validation.plan,
             planner_raw_json=planner_raw.parsed_json,
+            timing_ms=timing_ms,
         )
         self._log_routing_box(
             request_preview=request_preview,
-            prefilter=prefilter,
+            retrieval=retrieval,
             planner_enabled=planner_enabled,
             strict_json=strict_json,
             shadow_only=shadow_only,
@@ -396,4 +475,5 @@ class RuntimeMcpPlanningOrchestrator:
             gate_ok=True,
             gate_error=None,
         )
+        self._log_timing_box(request_preview, timing_ms)
         return decision

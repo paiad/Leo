@@ -1,8 +1,7 @@
-from __future__ import annotations
-
 import argparse
 import json
 from pathlib import Path
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -23,9 +22,22 @@ class RagMCPServer:
 
     def _register_tools(self) -> None:
         @self.server.tool()
-        async def index(paths: list[str], force_reindex: bool = False) -> str:
+        async def index(paths: list, force_reindex: bool = False) -> str:
             """Index local files/directories for retrieval."""
-            payload = self.rag.index(paths=paths, force_reindex=force_reindex)
+            normalized_paths: list[str] = []
+            if isinstance(paths, list):
+                for item in paths:
+                    if item is None:
+                        continue
+                    if isinstance(item, str):
+                        value = item.strip()
+                        if value:
+                            normalized_paths.append(value)
+                        continue
+                    value = str(item).strip()
+                    if value:
+                        normalized_paths.append(value)
+            payload = self.rag.index(paths=normalized_paths, force_reindex=force_reindex)
             return json.dumps(payload, ensure_ascii=False)
 
         @self.server.tool()

@@ -148,6 +148,7 @@ celerybeat.pid
 
 # Environments
 .env
+.hf_cache/
 .venv
 .uv312/
 env/
