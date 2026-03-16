@@ -13,7 +13,7 @@ from bff.domain.models import McpServerRecord
 from bff.repositories.store import InMemoryStore, PostgresStore, create_store
 from bff.services.runtime.mcp_routing.runtime_mcp_router import RuntimeMcpRouter
 from bff.services.runtime.mcp_routing.runtime_planning import RuntimeMcpPlanningOrchestrator
-from bff.services.runtime.mcp_routing.runtime_prefilter import RuntimeMcpPrefilter
+from bff.services.runtime.mcp_routing.runtime_tool_retriever import RuntimeMcpToolRetriever
 from bff.services.tooling.tooling_service import ToolingService
 
 DEFAULT_EVAL_FILE = Path("docs/plans/templates/mcp-routing-eval-samples.csv")
@@ -152,22 +152,22 @@ def _build_eval_context(server_source: str) -> EvalContext:
     )
 
 
-async def _evaluate_prefilter(samples: list[EvalSample], context: EvalContext) -> list[EvalOutcome]:
+async def _evaluate_retrieval(samples: list[EvalSample], context: EvalContext) -> list[EvalOutcome]:
     store = context.store
     router = RuntimeMcpRouter(store=store)
-    prefilter = RuntimeMcpPrefilter(router=router, store=store)
+    retriever = RuntimeMcpToolRetriever(router=router, store=store)
 
     outcomes: list[EvalOutcome] = []
     for sample in samples:
         prompt = f"[Current User Request]\n{sample.user_request}"
-        result = prefilter.build(prompt)
-        predicted = result.candidate_servers if result.need_mcp else ["none"]
+        result = retriever.retrieve(prompt)
+        predicted = [result.fallback_server_id] if result.fallback_server_id else ["none"]
         expected = _expected_groups(sample.expected_servers_raw)
         outcomes.append(
             EvalOutcome(
                 sample=sample,
                 predicted_servers=list(predicted),
-                execute_source="prefilter",
+                execute_source="retrieval",
                 gate_error_code=None,
                 first_step_match=_first_step_match(predicted, expected),
                 sequence_match=_sequence_match(predicted, expected),
@@ -284,8 +284,8 @@ async def main() -> None:
     )
     parser.add_argument(
         "--mode",
-        choices=["prefilter", "planner-shadow"],
-        default="prefilter",
+        choices=["retrieval", "planner-shadow"],
+        default="retrieval",
         help="Evaluation mode",
     )
     parser.add_argument(
@@ -309,7 +309,7 @@ async def main() -> None:
     if args.mode == "planner-shadow":
         outcomes = await _evaluate_planner_shadow(samples, context)
     else:
-        outcomes = await _evaluate_prefilter(samples, context)
+        outcomes = await _evaluate_retrieval(samples, context)
 
     summary = _summarize(
         outcomes,

@@ -11,19 +11,14 @@ flowchart TD
     ST1 --> ST2[Store: 写入 user message]
     ST2 --> BP[构建基础 Prompt<br/>输入 + Workspace + 历史 + 输出策略]
     BP --> RT[ManusRuntime.ask]
-    RT --> AGI[初始化/复用 Agent]
+    RT --> AGI["初始化/复用 Agent<br/>Main LLM: glm-5"]
 
     AGI --> PRE[预编译/预构建路由上下文<br/>提取 Current User Request + Intent 线索 + MCP Catalog]
-    PRE --> PF[Prefilter<br/>产出 intent + need_mcp + candidate_servers + candidate_tools + rule_fallback]
-    PF --> NEED{need_mcp}
-
-    NEED -->|否| NOMCP[不连接 MCP<br/>仅把 Runtime MCP Catalog 注入 Prompt]
-    NOMCP --> LOOP0[Agent 循环: PLAN -> ACT -> VERIFY]
-
-    NEED -->|是| PEN{Planner 开启}
+    PRE --> RT0["Retriever (SQLite + FTS + Embedding)<br/>Embedding: BAAI/bge-small-zh-v1.5 (cuda fp16)<br/>召回 candidate_servers + candidate_tools + fallback"]
+    RT0 --> PEN{Planner 开启}
     PEN -->|否| RULE[走规则路由 rule_fallback<br/>server_id, tool_name]
-    PEN -->|是| PL[Planner LLM 严格 JSON<br/>mcp-plan.v1]
-    PL --> GK[Gatekeeper 校验<br/>Schema, 白名单 server_tool, Policy]
+    PEN -->|是| PL["Planner LLM 严格 JSON<br/>协议: mcp-plan.v1<br/>Planner model: glm-5"]
+    PL --> GK[Gatekeeper 校验<br/>Schema, MCP 可用性, Policy]
     GK --> GOK{校验通过}
     GOK -->|否| RULE
     GOK -->|是| SHADOW{shadow_only}
@@ -36,7 +31,6 @@ flowchart TD
     CONN2 --> STEPS
     STEPS[执行步骤并检查命中<br/>未命中可 retry 或 forced fallback] --> LOOP1[Agent 循环: PLAN -> ACT -> VERIFY]
 
-    LOOP0 --> FIN[RuntimeFinalizer.finalize_response]
     LOOP1 --> FIN
     FIN --> AST[得到最终 assistant 文本]
     AST --> SAVE[写入 assistant message + 会话持久化]
@@ -48,11 +42,21 @@ flowchart TD
     JSON --> END
 ```
 
+## 当前项目模型配置（与上图对应）
+
+截至 2026-03-16，你当前项目实际使用的模型如下：
+
+- Main LLM（对话/执行）：`glm-5`（`config/config.toml` 的 `[llm].model`）
+- Planner LLM（严格 JSON 规划）：`glm-5`（当前未配置 `[llm.planner]`，因此回退到默认）
+- Tool Retrieval Embedding（工具向量召回）：`BAAI/bge-small-zh-v1.5`（`.env` 的 `BFF_MCP_TOOL_EMBEDDING_MODEL`），设备：`cuda`，dtype：`float16`
+- Feishu Audio ASR（语音转文字，可选）：`faster-whisper` 模型 `small`（`.env` 的 `FEISHU_AUDIO_ASR_MODEL`），设备：`cuda`（失败自动回退 `cpu`）
+
 对应代码与文档可参考：
 
 - `README.md` 中的“系统如何运作（消息回复流程）”
 - `docs/memory-architecture.md` 中的“Data Flow”
-- `bff/services/runtime/mcp_routing/runtime_prefilter.py`
+- `bff/services/runtime/mcp_routing/runtime_tool_index_sqlite.py`
+- `bff/services/runtime/mcp_routing/runtime_tool_retriever.py`
 - `bff/services/runtime/mcp_routing/runtime_planner.py`
 - `bff/services/runtime/mcp_routing/runtime_plan_validator.py`
 - `bff/services/runtime/runtime_executor.py`
@@ -69,23 +73,22 @@ flowchart TD
 - `web_search` 倾向（新闻/热点）
 - `browser_automation` 倾向（打开网站并操作）
 
-Prefilter（示意）会得到：
+Retriever（示意）会得到：
 
 ```json
 {
   "intent": "browser_automation",
-  "need_mcp": true,
   "candidate_servers": ["trendradar", "playwright", "exa"],
   "candidate_tools": {
     "trendradar": ["get_latest_news", "search_news"],
     "playwright": ["browser_navigate", "browser_type", "browser_click"],
     "exa": ["search"]
   },
-  "rule_fallback": {
+  "fallback": {
     "mode": "rule_route",
     "server_id": "trendradar",
     "tool_name": "get_latest_news",
-    "reason": "rule prefilter fallback"
+    "reason": "retrieval fallback"
   }
 }
 ```

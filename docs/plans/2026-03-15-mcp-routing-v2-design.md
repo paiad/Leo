@@ -156,7 +156,7 @@ flowchart TD
 
 基于当前代码结构（`runtime_mcp_router.py`、`runtime_executor.py`、`runtime_policy.py`）：
 
-1. 新增 `bff/services/runtime/runtime_prefilter.py`
+1. 新增 `bff/services/runtime/mcp_routing/runtime_tool_retriever.py` 与 `bff/services/runtime/mcp_routing/runtime_tool_index_sqlite.py`
 - 复用 `RuntimeMcpRouter` 的意图与别名能力，产出候选白名单。
 
 2. 新增 `bff/services/runtime/runtime_planner.py`

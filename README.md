@@ -85,12 +85,12 @@ flowchart LR
     end
 
     subgraph External["外部依赖"]
-        LLM[LLM Provider]
+        LLM["LLM Provider<br/>Main: glm-5<br/>Planner: glm-5"]
         MCPS[MCP Servers<br/>stdio / sse]
         PW[Playwright / Browser]
         FSAPI[Feishu Open API]
         VDB[Vector DB<br/>Chroma / Qdrant]
-        EMB[Embedding / Reranker Models]
+        EMB["Embedding / Reranker Models<br/>Tool Embedding: BAAI/bge-small-zh-v1.5 (cuda fp16)"]
     end
 
     subgraph ConfigState["配置与状态"]
@@ -152,6 +152,13 @@ API 层接收用户消息，定位或创建 `session`，写入本轮 user messag
 
 4. MCP 按需连接  
 `RuntimeMcpRouter` 基于当前请求语义选择需要连接的 MCP server，避免全量连接造成开销和不稳定。
+
+5. MCP Tool Retrieval（Retrieval-First）
+运行时会维护一个 SQLite 工具索引（默认 `workspace/mcp/tool_index.sqlite3`），用于从 MCP 的已 discover 工具信息中召回候选工具，再交给 Planner 做最终 Function Calling 决策。
+
+当你启用 Postgres 存储 MCP 状态时，`discoveredTools` 不会自动填充；需要通过 `/api/v1/mcp/servers/{server_id}/discover` 获取并持久化工具列表。也可以在启动时开启自动 discover：
+- `BFF_MCP_AUTO_DISCOVER_ON_STARTUP=1`：仅对 `enabled=true && discoveredTools==0` 的 server 自动 discover，并在成功后刷新 SQLite 索引
+- `BFF_MCP_AUTO_DISCOVER_LIMIT`：最多自动 discover 多少个 server（默认 20）
 
 5. RAG 判定与检索（命中时）  
 当请求被判定为知识问答时，运行时会优先连接 `rag` MCP，并在执行阶段调用 `mcp_rag_search`；若应触发但未触发，会进行一次强制 RAG 重试。
