@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from typing import Any
 
 import httpx
@@ -21,6 +20,17 @@ from bff.api.integration.feishu_progress import (
     normalize_progress_mode as _normalize_progress_mode_impl,
     parse_sse_message as _parse_sse_message_impl,
     stream_with_progress_reply,
+)
+from bff.api.integration.feishu_state import (
+    MessageDeduper,
+    SessionMap,
+    TokenStore,
+    verify_token as _verify_token_impl,
+)
+from bff.api.integration.feishu_webhook import (
+    encrypted_payload_error,
+    extract_message_receive_event,
+    url_verification_response,
 )
 from bff.domain.models import ChatRequest
 from bff.services.container import chat_service
@@ -72,111 +82,35 @@ def _clear_current_task_cancellation() -> None:
 
 
 def _verify_token(token: str | None) -> bool:
-    expected = str(get_env("FEISHU_VERIFICATION_TOKEN", "") or "").strip()
-    if not expected:
-        return True
-    return bool(token and token == expected)
+    expected = str(get_env("FEISHU_VERIFICATION_TOKEN", "") or "")
+    return _verify_token_impl(token, expected)
 
 
 def _split_text(text: str, max_len: int = 3000) -> list[str]:
     return _split_text_impl(text, max_len=max_len)
 
 
-class _TokenStore:
+class _SessionMap(SessionMap):
     def __init__(self) -> None:
-        self._token: str | None = None
-        self._expires_at: float = 0.0
-        self._lock = asyncio.Lock()
-
-    async def get(self) -> str:
-        async with self._lock:
-            now = time.time()
-            if self._token and now < self._expires_at:
-                return self._token
-
-            app_id = str(get_env("FEISHU_APP_ID", "") or "").strip()
-            app_secret = str(get_env("FEISHU_APP_SECRET", "") or "").strip()
-            if not app_id or not app_secret:
-                raise RuntimeError(
-                    "Missing FEISHU_APP_ID or FEISHU_APP_SECRET. "
-                    "Set them in environment variables before enabling Feishu webhook."
-                )
-
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                response = await client.post(
-                    _FEISHU_TOKEN_URL,
-                    json={"app_id": app_id, "app_secret": app_secret},
-                )
-            response.raise_for_status()
-            payload = response.json()
-            if payload.get("code", 0) != 0:
-                raise RuntimeError(
-                    f"Failed to get tenant_access_token: {payload.get('msg', 'unknown error')}"
-                )
-            token = str(payload.get("tenant_access_token") or "").strip()
-            if not token:
-                raise RuntimeError("Feishu auth response does not contain tenant_access_token")
-
-            expire = int(payload.get("expire") or 7200)
-            # Refresh token before actual expiration.
-            self._expires_at = now + max(60, expire - 120)
-            self._token = token
-            return token
+        super().__init__(
+            list_sessions=lambda: list(chat_service._store.sessions.values()),  # type: ignore[attr-defined]
+            create_session=lambda title: str(
+                chat_service.create_session(title=title, source="lark")["id"]
+            ),
+        )
 
 
-class _MessageDeduper:
-    def __init__(self, ttl_seconds: int = 600) -> None:
-        self._ttl = ttl_seconds
-        self._seen: dict[str, float] = {}
-        self._lock = asyncio.Lock()
-
-    async def exists(self, message_id: str) -> bool:
-        now = time.time()
-        async with self._lock:
-            expired = [key for key, expires_at in self._seen.items() if expires_at <= now]
-            for key in expired:
-                self._seen.pop(key, None)
-
-            if message_id in self._seen:
-                return True
-            self._seen[message_id] = now + self._ttl
-            return False
+async def _token_getter() -> str:
+    app_id = str(get_env("FEISHU_APP_ID", "") or "").strip()
+    app_secret = str(get_env("FEISHU_APP_SECRET", "") or "").strip()
+    try:
+        return await _token_store.get(app_id=app_id, app_secret=app_secret)
+    except TypeError:
+        return await _token_store.get()
 
 
-class _SessionMap:
-    def __init__(self) -> None:
-        self._map: dict[str, str] = {}
-        self._lock = asyncio.Lock()
-
-    async def get_or_create(self, chat_id: str) -> str:
-        target_title = f"Feishu-{chat_id}"
-        async with self._lock:
-            existing = self._map.get(chat_id)
-            if existing:
-                return existing
-
-            restored = sorted(
-                (
-                    session
-                    for session in chat_service._store.sessions.values()  # type: ignore[attr-defined]
-                    if (session.title or "").strip().lower() == target_title.lower()
-                ),
-                key=lambda item: item.updatedAt,
-                reverse=True,
-            )
-            if restored:
-                session_id = str(restored[0].id)
-                self._map[chat_id] = session_id
-                return session_id
-
-            session = chat_service.create_session(title=target_title, source="lark")
-            session_id = str(session["id"])
-            self._map[chat_id] = session_id
-            return session_id
-
-
-_token_store = _TokenStore()
-_deduper = _MessageDeduper()
+_token_store = TokenStore(token_url=_FEISHU_TOKEN_URL)
+_deduper = MessageDeduper()
 _session_map = _SessionMap()
 _local_asr_engine = LocalAsrEngine()
 
@@ -185,7 +119,7 @@ async def _send_text_message(chat_id: str, text: str) -> None:
     await _send_text_message_impl(
         chat_id,
         text,
-        get_token=_token_store.get,
+        get_token=_token_getter,
         send_url=_FEISHU_SEND_MESSAGE_URL,
     )
 
@@ -232,7 +166,7 @@ def _extract_audio_file_key(message: dict[str, Any]) -> str:
 
 
 async def _download_audio_resource(message_id: str, file_key: str) -> bytes:
-    token = await _token_store.get()
+    token = await _token_getter()
     headers = {"Authorization": f"Bearer {token}"}
     resource_url = _FEISHU_GET_MESSAGE_RESOURCE_URL.format(
         message_id=message_id,
@@ -466,34 +400,25 @@ async def handle_message_receive_event(event: dict[str, Any]) -> None:
 async def receive_feishu_events(request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
     body = await request.json()
 
-    # Encrypt Key mode payload ({"encrypt": "..."}) is not handled in this lightweight adapter.
-    if "encrypt" in body and "type" not in body:
+    encrypted_error = encrypted_payload_error(body)
+    if encrypted_error is not None:
         logger.error(
             "Received encrypted Feishu event payload, but decrypt logic is not configured. "
             "Disable Encrypt Key or implement decrypt flow before using encrypted callback."
         )
-        return {"code": 1, "msg": "encrypted payload is not supported"}
+        return encrypted_error
 
-    # URL verification request
-    if body.get("type") == "url_verification":
-        if not _verify_token(body.get("token")):
+    verification_response = url_verification_response(body, verify_token=_verify_token)
+    if verification_response is not None:
+        if verification_response.get("code") == 1:
             logger.warning("Feishu url_verification token mismatch")
-            return {"code": 1, "msg": "invalid token"}
-        return {"challenge": body.get("challenge", "")}
+        return verification_response
 
-    header = body.get("header") or {}
-    event_type = str(header.get("event_type") or "")
-    if event_type != "im.message.receive_v1":
-        return {"code": 0}
-
-    if not _verify_token(header.get("token")):
+    event, message_id, error = extract_message_receive_event(body, verify_token=_verify_token)
+    if error is not None:
         logger.warning("Feishu event token mismatch")
-        return {"code": 1, "msg": "invalid token"}
-
-    event = body.get("event") or {}
-    message = event.get("message") or {}
-    message_id = str(message.get("message_id") or "").strip()
-    if not message_id:
+        return error
+    if event is None:
         return {"code": 0}
 
     if await _deduper.exists(message_id):
