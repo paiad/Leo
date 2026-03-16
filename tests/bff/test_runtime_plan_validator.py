@@ -138,3 +138,30 @@ def test_plan_validator_blocks_unknown_tool():
 
     assert result.plan is None
     assert result.error_code == ERROR_TOOL_NOT_ALLOWED
+
+
+def test_plan_validator_repairs_null_fallback():
+    validator = RuntimeMcpPlanValidator(store=_store())
+    result = validator.validate(
+        {
+            "version": "mcp-plan.v1",
+            "need_mcp": True,
+            "plan_steps": [
+                {
+                    "goal": "open site",
+                    "server_id": "playwright",
+                    "tool_name": "browser_navigate",
+                    "args_hint": {},
+                    "confidence": 0.9,
+                    "reason": "browser action",
+                }
+            ],
+            "fallback": None,
+        },
+        retrieval=_retrieval(),
+    )
+
+    assert result.plan is not None
+    assert result.plan.fallback.mode == "rule_route"
+    assert result.plan.fallback.server_id == "playwright"
+    assert result.plan.fallback.tool_name == "browser_navigate"

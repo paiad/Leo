@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
 import httpx
@@ -88,6 +89,28 @@ def _verify_token(token: str | None) -> bool:
 
 def _split_text(text: str, max_len: int = 3000) -> list[str]:
     return _split_text_impl(text, max_len=max_len)
+
+
+def _sanitize_user_text(text: str, *, is_audio_asr: bool) -> str:
+    value = (text or "").strip()
+    if not value:
+        return ""
+
+    # Remove non-printable control chars to avoid transport/protocol edge cases.
+    value = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", value).strip()
+
+    if not is_audio_asr:
+        return value
+
+    try:
+        max_chars = int(str(get_env("FEISHU_AUDIO_ASR_MAX_CHARS", "1200") or "1200"))
+    except ValueError:
+        max_chars = 1200
+    if max_chars <= 0:
+        max_chars = 1200
+    if len(value) <= max_chars:
+        return value
+    return value[:max_chars].rstrip()
 
 
 class _SessionMap(SessionMap):
@@ -268,6 +291,7 @@ async def _handle_receive_event(event: dict[str, Any]) -> None:
 
     try:
         user_text = await _resolve_user_input_text(message)
+        user_text = _sanitize_user_text(user_text, is_audio_asr=(msg_type == "audio"))
     except Exception:
         logger.exception(
             "Failed to resolve Feishu message content: "

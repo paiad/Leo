@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+from difflib import SequenceMatcher
 from collections.abc import AsyncIterable, Awaitable, Callable
 from typing import Any
 
@@ -57,6 +59,41 @@ def format_thinking_progress_message(payload: dict[str, Any], *, max_chars: int)
     return message
 
 
+def _normalize_for_similarity(text: str) -> str:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return ""
+    # Drop markdown markers and punctuation/noise so formatting differences
+    # (line breaks, bullets, emphasis) do not bypass dedup.
+    normalized = normalized.replace("**", " ")
+    normalized = re.sub(r"[\r\n\t]+", " ", normalized)
+    normalized = re.sub(r"[-*#>`~_]+", " ", normalized)
+    normalized = re.sub(
+        r"[，。！？；：、“”‘’（）()【】\[\],.!?;:\"'…·/\\|]+",
+        " ",
+        normalized,
+    )
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
+
+def is_semantically_similar(a: str, b: str, *, threshold: float = 0.88) -> bool:
+    left = _normalize_for_similarity(a)
+    right = _normalize_for_similarity(b)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+
+    shorter = left if len(left) <= len(right) else right
+    longer = right if shorter is left else left
+    if shorter and shorter in longer and (len(shorter) / max(1, len(longer))) >= 0.65:
+        return True
+
+    ratio = SequenceMatcher(None, left, right).ratio()
+    return ratio >= threshold
+
+
 async def stream_with_progress_reply(
     *,
     raw_events: AsyncIterable[str],
@@ -73,6 +110,7 @@ async def stream_with_progress_reply(
     last_sent_text: str | None = None
     progress_count = 0
     has_started_reply = False
+    pending_thinking_text: str | None = None
 
     async for raw_event in raw_events:
         parsed = parse_sse_message(raw_event)
@@ -100,7 +138,15 @@ async def stream_with_progress_reply(
             if mode in {"thoughts", "both"} and progress_count < max_progress:
                 text = format_thinking_progress_message(payload, max_chars=thinking_max_chars)
                 if text and text != last_progress_text:
-                    last_sent_text = await send_text_dedup(text, last_sent_text)
+                    # Emit the previous thinking now; keep the latest one as pending.
+                    # This lets us semantically filter only the final thinking message
+                    # against the final assistant summary.
+                    if pending_thinking_text:
+                        last_sent_text = await send_text_dedup(
+                            pending_thinking_text,
+                            last_sent_text,
+                        )
+                    pending_thinking_text = text
                     last_progress_text = text
                     progress_count += 1
             continue
@@ -116,5 +162,10 @@ async def stream_with_progress_reply(
             break
 
     assistant_text = "".join(chunks).strip() or fallback_empty_message
+    if pending_thinking_text and not is_semantically_similar(
+        pending_thinking_text,
+        assistant_text,
+    ):
+        last_sent_text = await send_text_dedup(pending_thinking_text, last_sent_text)
     await send_text_dedup(assistant_text, last_sent_text)
     return True

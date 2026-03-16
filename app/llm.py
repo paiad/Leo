@@ -428,15 +428,35 @@ class LLM:
                     **params, stream=False
                 )
 
-                if not response.choices or not response.choices[0].message.content:
-                    raise ValueError("Empty or invalid response from LLM")
+                if not response.choices:
+                    logger.warning(
+                        "LLM returned no choices in non-streaming mode; "
+                        "falling back to empty string response"
+                    )
+                    if response.usage:
+                        self.update_token_count(
+                            response.usage.prompt_tokens, response.usage.completion_tokens
+                        )
+                    return ""
+
+                content = response.choices[0].message.content
+                if not content:
+                    logger.warning(
+                        "LLM returned empty content in non-streaming mode; "
+                        "falling back to empty string response"
+                    )
+                    if response.usage:
+                        self.update_token_count(
+                            response.usage.prompt_tokens, response.usage.completion_tokens
+                        )
+                    return ""
 
                 # Update token counts
                 self.update_token_count(
                     response.usage.prompt_tokens, response.usage.completion_tokens
                 )
 
-                return response.choices[0].message.content
+                return content
 
             # Streaming request, For streaming, update estimated token count before making the request
             self.update_token_count(input_tokens)
@@ -454,7 +474,11 @@ class LLM:
             print()  # Newline after streaming
             full_response = "".join(collected_messages).strip()
             if not full_response:
-                raise ValueError("Empty response from streaming LLM")
+                logger.warning(
+                    "LLM returned empty content in streaming mode; "
+                    "falling back to empty string response"
+                )
+                return ""
 
             # estimate completion tokens for streaming response
             completion_tokens = self.count_tokens(completion_text)
@@ -596,11 +620,34 @@ class LLM:
             if not stream:
                 response = await self.client.chat.completions.create(**params)
 
-                if not response.choices or not response.choices[0].message.content:
-                    raise ValueError("Empty or invalid response from LLM")
+                if not response.choices:
+                    logger.warning(
+                        "LLM returned no choices in ask_with_images non-streaming mode; "
+                        "falling back to empty string response"
+                    )
+                    if response.usage:
+                        self.update_token_count(
+                            response.usage.prompt_tokens, response.usage.completion_tokens
+                        )
+                    return ""
 
-                self.update_token_count(response.usage.prompt_tokens)
-                return response.choices[0].message.content
+                content = response.choices[0].message.content
+                if not content:
+                    logger.warning(
+                        "LLM returned empty content in ask_with_images non-streaming mode; "
+                        "falling back to empty string response"
+                    )
+                    if response.usage:
+                        self.update_token_count(
+                            response.usage.prompt_tokens, response.usage.completion_tokens
+                        )
+                    return ""
+
+                if response.usage:
+                    self.update_token_count(
+                        response.usage.prompt_tokens, response.usage.completion_tokens
+                    )
+                return content
 
             # Handle streaming request
             self.update_token_count(input_tokens)
@@ -616,7 +663,11 @@ class LLM:
             full_response = "".join(collected_messages).strip()
 
             if not full_response:
-                raise ValueError("Empty response from streaming LLM")
+                logger.warning(
+                    "LLM returned empty content in ask_with_images streaming mode; "
+                    "falling back to empty string response"
+                )
+                return ""
 
             return full_response
 

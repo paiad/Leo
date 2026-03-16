@@ -6,6 +6,11 @@ from typing import Any
 
 from app.llm import LLM
 from app.logger import logger
+from app.prompt.llm_prompts import (
+    MCP_PLANNER_REPAIR_SYSTEM_PROMPT,
+    MCP_PLANNER_SYSTEM_PROMPT,
+    build_mcp_planner_prompt,
+)
 from bff.services.runtime.mcp_routing.runtime_plan_models import (
     ERROR_INVALID_JSON,
     PlannerRawResult,
@@ -15,11 +20,6 @@ from bff.services.runtime.runtime_policy import RuntimePolicy
 
 
 class RuntimeMcpPlanner:
-    _SYSTEM_PROMPT = (
-        "You are a strict MCP planning engine. "
-        "Return JSON only. No markdown, no prose, no code fences."
-    )
-
     def __init__(self, llm: LLM | None = None):
         # Use a dedicated LLM profile for planning when available.
         # Configure via `config/config.toml` section `[llm.planner]`.
@@ -33,7 +33,7 @@ class RuntimeMcpPlanner:
         try:
             response = await self._llm.ask(
                 messages=[{"role": "user", "content": planner_prompt}],
-                system_msgs=[{"role": "system", "content": self._SYSTEM_PROMPT}],
+                system_msgs=[{"role": "system", "content": MCP_PLANNER_SYSTEM_PROMPT}],
                 stream=False,
                 temperature=0,
             )
@@ -48,6 +48,12 @@ class RuntimeMcpPlanner:
 
         parsed = self._extract_json(response)
         if parsed is None:
+            repaired = await self._repair_to_json(response, planner_prompt)
+            if repaired is not None:
+                parsed = self._extract_json(repaired)
+                if parsed is not None:
+                    return PlannerRawResult(raw_text=repaired, parsed_json=parsed)
+
             return PlannerRawResult(
                 raw_text=response,
                 parsed_json=None,
@@ -57,46 +63,30 @@ class RuntimeMcpPlanner:
 
         return PlannerRawResult(raw_text=response, parsed_json=parsed)
 
+    async def _repair_to_json(self, raw_response: str, planner_prompt: str) -> str | None:
+        if not raw_response:
+            return None
+
+        repair_payload = {
+            "task": "repair_planner_json",
+            "requirement": "return one strict JSON object matching the planner output contract",
+            "planner_prompt": planner_prompt,
+            "raw_output": raw_response,
+        }
+        try:
+            return await self._llm.ask(
+                messages=[{"role": "user", "content": json.dumps(repair_payload, ensure_ascii=False)}],
+                system_msgs=[{"role": "system", "content": MCP_PLANNER_REPAIR_SYSTEM_PROMPT}],
+                stream=False,
+                temperature=0,
+            )
+        except Exception as exc:
+            logger.warning(f"Planner JSON repair call failed: {exc}")
+            return None
+
     @staticmethod
     def _build_planner_prompt(user_request: str, retrieval: RetrievalResult) -> str:
-        payload = {
-            "version": "mcp-plan.v1",
-            "request": user_request,
-            "retrieval": {
-                "intent": retrieval.intent,
-                "candidate_servers": retrieval.candidate_servers,
-                "candidate_tools": retrieval.candidate_tools,
-                "candidate_tool_profiles": retrieval.candidate_tool_profiles,
-                "fallback": retrieval.fallback.model_dump(mode="json"),
-            },
-            "output_contract": {
-                "need_mcp": "boolean",
-                "plan_steps": [
-                    {
-                        "goal": "string",
-                        "server_id": "string; prefer candidate_servers",
-                        "tool_name": "string; prefer candidate_tools[server_id] when non-empty; use 'auto' if unsure",
-                        "args_hint": "object",
-                        "confidence": "number in [0,1]",
-                        "reason": "string",
-                    }
-                ],
-                "fallback": {
-                    "mode": "rule_route|no_mcp|explain_fail",
-                    "server_id": "string|null",
-                    "tool_name": "string|null",
-                    "reason": "string",
-                },
-            },
-            "rules": [
-                "output strict JSON object only",
-                "do not use keys outside contract",
-                "if no MCP needed, set need_mcp=false and plan_steps=[]",
-                "prefer shortest correct plan",
-                "prefer using retrieved candidate servers/tools; only choose non-candidates when necessary",
-            ],
-        }
-        return json.dumps(payload, ensure_ascii=False)
+        return build_mcp_planner_prompt(user_request, retrieval)
 
     @staticmethod
     def _extract_json(raw_text: str) -> dict[str, Any] | None:
@@ -115,6 +105,11 @@ class RuntimeMcpPlanner:
             if fenced is not None:
                 return fenced
 
+        for candidate in RuntimeMcpPlanner._extract_balanced_json_objects(text):
+            parsed = RuntimeMcpPlanner._try_load_json_object(candidate)
+            if parsed is not None:
+                return parsed
+
         first = text.find("{")
         last = text.rfind("}")
         if first >= 0 and last > first:
@@ -131,3 +126,39 @@ class RuntimeMcpPlanner:
         except Exception:
             return None
         return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _extract_balanced_json_objects(text: str) -> list[str]:
+        candidates: list[str] = []
+        start_idx: int | None = None
+        depth = 0
+        in_string = False
+        escaped = False
+
+        for idx, char in enumerate(text):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+                continue
+
+            if char == "{":
+                if depth == 0:
+                    start_idx = idx
+                depth += 1
+                continue
+
+            if char == "}" and depth > 0:
+                depth -= 1
+                if depth == 0 and start_idx is not None:
+                    candidates.append(text[start_idx : idx + 1].strip())
+                    start_idx = None
+
+        return candidates

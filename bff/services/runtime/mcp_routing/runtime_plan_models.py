@@ -54,6 +54,47 @@ class PlannerOutput(BaseModel):
     plan_steps: list[PlannerStep] = Field(default_factory=list)
     fallback: PlannerFallback
 
+    @model_validator(mode="before")
+    @classmethod
+    def _repair_fallback(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        normalized = dict(data)
+        need_mcp = bool(normalized.get("need_mcp"))
+        fallback = normalized.get("fallback")
+
+        mode_default = "rule_route" if need_mcp else "no_mcp"
+        reason_default = (
+            "auto_fallback_for_need_mcp"
+            if need_mcp
+            else "auto_fallback_for_no_mcp"
+        )
+
+        if not isinstance(fallback, dict):
+            fallback = {"mode": mode_default, "reason": reason_default}
+        else:
+            fallback = dict(fallback)
+            mode = str(fallback.get("mode") or "").strip().lower()
+            if mode not in {"rule_route", "no_mcp", "explain_fail"}:
+                fallback["mode"] = mode_default
+            reason = str(fallback.get("reason") or "").strip()
+            if not reason:
+                fallback["reason"] = reason_default
+
+        if need_mcp:
+            first_step = normalized.get("plan_steps")
+            if isinstance(first_step, list) and first_step and isinstance(first_step[0], dict):
+                first_server = str(first_step[0].get("server_id") or "").strip().lower()
+                first_tool = str(first_step[0].get("tool_name") or "").strip().lower()
+                if first_server and not str(fallback.get("server_id") or "").strip():
+                    fallback["server_id"] = first_server
+                if first_tool and not str(fallback.get("tool_name") or "").strip():
+                    fallback["tool_name"] = first_tool
+
+        normalized["fallback"] = fallback
+        return normalized
+
     @model_validator(mode="after")
     def _validate_steps(self) -> "PlannerOutput":
         if self.need_mcp and not self.plan_steps:

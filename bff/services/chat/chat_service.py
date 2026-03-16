@@ -13,7 +13,7 @@ import tiktoken
 from opencc import OpenCC
 from app.config import config
 from app.logger import logger
-from app.prompt.manus import SYSTEM_PROMPT
+from app.prompt.llm_prompts import LEO_SYSTEM_PROMPT_TEMPLATE
 from bff.domain.models import (
     ChatRequest,
     MessageRecord,
@@ -400,7 +400,7 @@ class ChatService:
 
     @staticmethod
     def platform_prompt() -> str:
-        return SYSTEM_PROMPT.format(directory=config.workspace_root)
+        return LEO_SYSTEM_PROMPT_TEMPLATE.format(directory=config.workspace_root)
 
     def model_config(self) -> dict[str, Any]:
         return self._model_service.chat_model_config()

@@ -17,7 +17,7 @@ flowchart TD
     PRE --> RT0["Retriever (SQLite + FTS + Embedding)<br/>Embedding: BAAI/bge-small-zh-v1.5 (cuda fp16)<br/>召回 candidate_servers + candidate_tools + fallback"]
     RT0 --> PEN{Planner 开启}
     PEN -->|否| RULE[走规则路由 rule_fallback<br/>server_id, tool_name]
-    PEN -->|是| PL["Planner LLM 严格 JSON<br/>协议: mcp-plan.v1<br/>Planner model: glm-5"]
+    PEN -->|是| PL["Planner LLM 严格 JSON<br/>协议: mcp-plan.v1<br/>Planner model: glm-4.7-flashx"]
     PL --> GK[Gatekeeper 校验<br/>Schema, MCP 可用性, Policy]
     GK --> GOK{校验通过}
     GOK -->|否| RULE
@@ -46,8 +46,9 @@ flowchart TD
 
 截至 2026-03-16，你当前项目实际使用的模型如下：
 
-- Main LLM（对话/执行）：`glm-5`（`config/config.toml` 的 `[llm].model`）
-- Planner LLM（严格 JSON 规划）：`glm-5`（当前未配置 `[llm.planner]`，因此回退到默认）
+- Main LLM（对话/执行）：`glm-5`（当前 active model 为 `glm-5`，与 `config/config.toml` 的 `[llm].model` 一致）
+- Planner LLM（严格 JSON 规划）：`glm-4.7-flashx`（`config/config.toml` 的 `[llm.planner].model`，不再回退默认模型）
+- Vision LLM（多模态/图像能力）：`glm-5`（`config/config.toml` 的 `[llm.vision].model`）
 - Tool Retrieval Embedding（工具向量召回）：`BAAI/bge-small-zh-v1.5`（`.env` 的 `BFF_MCP_TOOL_EMBEDDING_MODEL`），设备：`cuda`，dtype：`float16`
 - Feishu Audio ASR（语音转文字，可选）：`faster-whisper` 模型 `small`（`.env` 的 `FEISHU_AUDIO_ASR_MODEL`），设备：`cuda`（失败自动回退 `cpu`）
 
