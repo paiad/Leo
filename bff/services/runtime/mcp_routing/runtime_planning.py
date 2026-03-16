@@ -154,6 +154,60 @@ class RuntimeMcpPlanningOrchestrator:
         prompt_hash = self._hash_prompt(prompt_text)
         request_preview = self._router.request_preview(prompt)
 
+        if self._router.should_short_circuit_general_no_mcp(prompt):
+            retrieval = RetrievalResult(
+                intent="general",
+                candidate_servers=[],
+                candidate_tools={},
+                candidate_tool_profiles={},
+                fallback=PlannerFallback(mode="no_mcp", reason="general_intent_short_circuit"),
+            )
+            rule_plan = self._build_rule_plan(retrieval)
+            timing_ms = {
+                "planning_total_ms": int((time.perf_counter() - started) * 1000),
+                "planning_retrieval_ms": 0,
+                "planning_planner_ms": 0,
+                "planning_gatekeeper_ms": 0,
+            }
+            self._record(
+                {
+                    "event_type": "retrieval",
+                    "session_id": session_id,
+                    "prompt_hash": prompt_hash,
+                    "intent": retrieval.intent,
+                    "selected_server_id": None,
+                    "candidate_servers": [],
+                    "scores": {
+                        "candidate_tools": {},
+                        "candidate_tool_profiles": {},
+                        "request_preview": request_preview,
+                        "reason": "general_intent_short_circuit",
+                    },
+                    "connected_servers": [],
+                }
+            )
+            decision = PlanningDecision(
+                execute_plan=rule_plan,
+                execute_source="no_mcp",
+                retrieval=retrieval,
+                timing_ms=timing_ms,
+            )
+            self._log_routing_box(
+                request_preview=request_preview,
+                retrieval=retrieval,
+                planner_enabled=planner_enabled,
+                strict_json=strict_json,
+                shadow_only=shadow_only,
+                execute_source=decision.execute_source,
+                execute_plan=decision.execute_plan,
+                planner_json_ok=None,
+                planner_error=None,
+                gate_ok=None,
+                gate_error=None,
+            )
+            self._log_timing_box(request_preview, timing_ms)
+            return decision
+
         retrieval_started = time.perf_counter()
         retrieval_output = self._retriever.retrieve(prompt)
         retrieval_ms = int((time.perf_counter() - retrieval_started) * 1000)

@@ -297,3 +297,17 @@ class RuntimePolicy:
         return RuntimePolicy.build_forced_server_retry_prompt(
             prompt, server_id="playwright"
         )
+
+    @staticmethod
+    def build_no_mcp_execution_prompt(prompt: str, *, reason: str | None = None) -> str:
+        reason_text = (reason or "").strip()
+        reason_line = f"reason={reason_text}\n" if reason_text else ""
+        reminder = (
+            "[Runtime No-MCP Enforcement]\n"
+            f"{reason_line}"
+            "当前回合执行决策为 need_mcp=false。\n"
+            "禁止声称将调用任何 `mcp_*` 工具（包括 playwright/trendradar/github/rag）。\n"
+            "如果用户诉求依赖网页自动化，请明确说明“本回合未启用 MCP 浏览器工具”，并给出可执行替代方案。\n"
+            "回答必须与当前可用工具一致，避免描述不可执行的下一步。\n"
+        )
+        return f"{prompt}\n\n{reminder}"

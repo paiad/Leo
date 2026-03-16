@@ -230,7 +230,11 @@ class RuntimeExecutor:
                     await agent.disconnect_mcp_server()
                 except Exception as exc:
                     logger.warning(f"Failed to disconnect MCP servers for no_mcp turn, ignored: {exc}")
-                run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(prompt)
+                no_mcp_prompt = self._policy.build_no_mcp_execution_prompt(
+                    prompt,
+                    reason=(plan.fallback.reason if plan.fallback else ""),
+                )
+                run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(no_mcp_prompt)
                 agent_started = time.perf_counter()
                 raw = await self._run_agent(
                     agent=agent,

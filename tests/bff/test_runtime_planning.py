@@ -64,3 +64,31 @@ async def test_planning_orchestrator_returns_no_mcp_for_meta_query(monkeypatch, 
 
     assert decision.execute_source == "no_mcp"
     assert decision.execute_plan.need_mcp is False
+
+
+@pytest.mark.asyncio
+async def test_planning_orchestrator_short_circuits_general_greeting(monkeypatch, tmp_path):
+    store = InMemoryStore(enable_persistence=False)
+    store.mcp_servers["playwright"] = _server("playwright")
+
+    router = RuntimeMcpRouter(store=store)
+    orchestrator = RuntimeMcpPlanningOrchestrator(router=router, store=store)
+
+    def _unexpected_retrieve(_prompt):
+        raise AssertionError("retriever should not be called for greeting short-circuit")
+
+    async def _unexpected_plan(_prompt, _retrieval):
+        raise AssertionError("planner should not be called for greeting short-circuit")
+
+    monkeypatch.setattr(orchestrator._retriever, "retrieve", _unexpected_retrieve)
+    monkeypatch.setattr(orchestrator._planner, "create_plan", _unexpected_plan)
+    monkeypatch.setenv("BFF_RUNTIME_PLANNER_ENABLED", "1")
+    monkeypatch.setenv("BFF_MCP_TOOL_INDEX_SQLITE_PATH", str(tmp_path / "mcp_tool_index.sqlite3"))
+    monkeypatch.setenv("BFF_MCP_TOOL_INDEX_EMBEDDINGS_ENABLED", "0")
+
+    decision = await orchestrator.decide("[Current User Request]\nhello")
+
+    assert decision.execute_source == "no_mcp"
+    assert decision.execute_plan.need_mcp is False
+    assert decision.retrieval.intent == "general"
+    assert decision.execute_plan.fallback.mode == "no_mcp"
