@@ -168,6 +168,9 @@ class RuntimeMcpRouter:
         "打开网页",
         "页面",
         "点击",
+        "看",
+        "想看",
+        "观看",
         "播放",
         "暂停",
         "视频",
@@ -189,12 +192,58 @@ class RuntimeMcpRouter:
         "截图",
         "浏览器",
         "点击",
+        "想看",
+        "观看",
         "播放",
         "暂停",
         "视频",
         "音乐",
         "歌曲",
         "b站",
+    }
+    _WATCH_INTENT_HINTS = {
+        "想看",
+        "看看",
+        "看下",
+        "看一下",
+        "看一看",
+        "watch",
+    }
+    _MEDIA_CONTENT_HINTS = {
+        "综艺",
+        "节目",
+        "剧",
+        "电视剧",
+        "电影",
+        "视频",
+        "episode",
+        "show",
+        "series",
+    }
+    _GENERAL_NO_MCP_SHORT_TEXTS = {
+        "hi",
+        "hello",
+        "hey",
+        "yo",
+        "thanks",
+        "thankyou",
+        "thx",
+        "ok",
+        "okay",
+        "你好",
+        "您好",
+        "嗨",
+        "哈喽",
+        "谢谢",
+        "谢了",
+        "收到",
+        "在吗",
+        "早上好",
+        "下午好",
+        "晚上好",
+        "早安",
+        "午安",
+        "晚安",
     }
 
     def __init__(self, store: InMemoryStore | None = None):
@@ -319,12 +368,29 @@ class RuntimeMcpRouter:
     def _looks_like_browser_action_request(self, prompt_text: str) -> bool:
         if not prompt_text:
             return False
+        if self._looks_like_watch_content_request(prompt_text):
+            return True
         return any(hint in prompt_text for hint in self._BROWSER_ACTION_HINTS)
 
     def _looks_like_strong_browser_action_request(self, prompt_text: str) -> bool:
         if not prompt_text:
             return False
+        if self._looks_like_watch_content_request(prompt_text):
+            return True
         return any(hint in prompt_text for hint in self._BROWSER_STRONG_ACTION_HINTS)
+
+    def _looks_like_watch_content_request(self, prompt_text: str) -> bool:
+        if not prompt_text:
+            return False
+        if not any(hint in prompt_text for hint in self._WATCH_INTENT_HINTS):
+            return False
+        # Avoid hijacking definition-style QA ("看XXX是什么意思").
+        if any(hint in prompt_text for hint in self._RAG_QA_HINTS):
+            return False
+        if any(hint in prompt_text for hint in self._MEDIA_CONTENT_HINTS):
+            return True
+        # "想看 + 拉丁内容词" 常见于节目/影视搜索，如 Running Man.
+        return bool(re.search(r"[a-z]{2,}", prompt_text))
 
     def _looks_like_mixed_news_and_browser_request(self, prompt_text: str) -> bool:
         return self._looks_like_trendradar_news_request(
@@ -364,6 +430,25 @@ class RuntimeMcpRouter:
     def classify_prompt_intent(self, prompt: str) -> IntentType:
         prompt_text = self.normalized_current_user_request(prompt)
         return self._classify_intent(prompt_text)
+
+    def should_short_circuit_general_no_mcp(self, prompt: str) -> bool:
+        prompt_text = self.normalized_current_user_request(prompt)
+        if not prompt_text:
+            return True
+        if self._is_tooling_meta_query(prompt_text):
+            return False
+        if self._looks_like_browser_action_request(prompt_text):
+            return False
+        if self._looks_like_trendradar_news_request(prompt_text):
+            return False
+        if any(hint in prompt_text for hint in self._REPO_HINTS):
+            return False
+        if any(hint in prompt_text for hint in self._SEARCH_HINTS):
+            return False
+        compact = re.sub(r"[\s\W_]+", "", prompt_text, flags=re.UNICODE)
+        if not compact:
+            return True
+        return compact in self._GENERAL_NO_MCP_SHORT_TEXTS
 
     def keyword_overlap_count(self, prompt_text: str, server: Any) -> int:
         """

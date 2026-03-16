@@ -261,6 +261,21 @@ def test_force_playwright_for_browser_prompt():
     assert router.should_force_playwright_for_prompt(prompt) is True
 
 
+def test_watch_content_request_is_classified_as_browser_automation():
+    router = RuntimeMcpRouter(store=None)
+    prompt = "[Current User Request]\n我想看一个综艺节目"
+
+    intent = router.classify_prompt_intent(prompt)
+    assert intent == "browser_automation"
+
+
+def test_watch_content_request_forces_playwright():
+    router = RuntimeMcpRouter(store=None)
+    prompt = "[Current User Request]\n我想看一个综艺节目"
+
+    assert router.should_force_playwright_for_prompt(prompt) is True
+
+
 def test_mcp_selection_respects_policy_disable():
     store = InMemoryStore(enable_persistence=False)
     store.mcp_routing_policies["web_search:trendradar"] = McpRoutingPolicyRecord(
