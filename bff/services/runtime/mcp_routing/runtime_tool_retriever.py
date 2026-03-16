@@ -45,6 +45,176 @@ class RuntimeMcpToolRetriever:
     def _is_truthy_env(value: str | None) -> bool:
         return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
+    def _looks_like_news_search_request(self, request_text: str) -> bool:
+        checker = getattr(self._router, "_looks_like_trendradar_news_request", None)
+        if callable(checker):
+            try:
+                return bool(checker(self._router._normalize_text(request_text)))
+            except Exception:
+                pass
+        text = (request_text or "").lower()
+        fallback_hints = (
+            "新闻",
+            "热点",
+            "热搜",
+            "趋势",
+            "rss",
+            "douyin",
+            "weibo",
+            "zhihu",
+            "toutiao",
+            "top",
+        )
+        return any(hint in text for hint in fallback_hints)
+
+    def _looks_like_search_request(self, request_text: str) -> bool:
+        text = (request_text or "").lower()
+        hints = (
+            "搜索",
+            "检索",
+            "search",
+            "look up",
+            "find",
+            "查一下",
+            "查找",
+            "查",
+            "query",
+        )
+        return any(hint in text for hint in hints)
+
+    def _build_prioritized_tools(self, server_id: str, *, news_like: bool) -> list[str]:
+        names = self._index.list_enabled_tool_names(server_id=server_id, limit=30)
+        name_set = set(names)
+        if server_id == "searxng":
+            preferred = ["search", "health"]
+        elif server_id == "trendradar" and news_like:
+            preferred = ["get_latest_news", "search_news", "aggregate_news", "resolve_date_range"]
+        else:
+            preferred = []
+        ordered = [name for name in preferred if name in name_set]
+        ordered.extend([name for name in names if name not in set(ordered)])
+        return ordered[:15]
+
+    def _maybe_fast_path_output(
+        self,
+        *,
+        intent: str,
+        request_text: str,
+        force_playwright: bool,
+        timing_ms: dict[str, int],
+        max_servers: int,
+        started: float,
+    ) -> RetrievalOutput | None:
+        if force_playwright:
+            return None
+
+        if intent not in {"web_search", "browser_automation"}:
+            return None
+        if not self._looks_like_search_request(request_text):
+            return None
+
+        enabled_started = time.perf_counter()
+        enabled_servers = self._enabled_server_ids()
+        timing_ms["enabled_servers_ms"] = int((time.perf_counter() - enabled_started) * 1000)
+        enabled = set(enabled_servers)
+
+        news_like = self._looks_like_news_search_request(request_text)
+        preferred = ["trendradar", "searxng"] if news_like else ["searxng", "trendradar"]
+
+        candidate_servers = [sid for sid in preferred if sid in enabled]
+        if not candidate_servers:
+            return None
+
+        for sid in enabled_servers:
+            if sid not in candidate_servers:
+                candidate_servers.append(sid)
+            if len(candidate_servers) >= max(1, max_servers):
+                break
+
+        candidate_servers = candidate_servers[: max(1, max_servers)]
+        candidate_tools: dict[str, list[str]] = {}
+        candidate_tool_profiles: dict[str, dict[str, dict[str, Any]]] = {}
+
+        for sid in candidate_servers:
+            candidate_tools[sid] = self._build_prioritized_tools(sid, news_like=news_like)
+            candidate_tool_profiles[sid] = {}
+
+        fallback_server_id = candidate_servers[0] if candidate_servers else None
+        fallback_tool_name = self._select_fallback_tool_name(
+            fallback_server_id=fallback_server_id,
+            request_text=request_text,
+            intent=intent,
+            candidate_tools=candidate_tools,
+        )
+
+        # For explicit news retrieval on TrendRadar, avoid generic auto fallback.
+        if fallback_server_id == "trendradar" and news_like and "get_latest_news" in (candidate_tools.get("trendradar") or []):
+            fallback_tool_name = "get_latest_news"
+
+        timing_ms["total_ms"] = int((time.perf_counter() - started) * 1000)
+        debug = {
+            "refreshed_index": False,
+            "request_preview": self._router.request_preview(request_text),
+            "server_scores": {sid: 0.0 for sid in enabled_servers},
+            "retrieved_tools": [],
+            "timing_ms": timing_ms,
+            "fast_path": True,
+            "fast_path_reason": "news_search" if news_like else "general_web_search",
+        }
+
+        return RetrievalOutput(
+            intent=intent,
+            candidate_servers=candidate_servers,
+            candidate_tools=candidate_tools,
+            candidate_tool_profiles=candidate_tool_profiles,
+            fallback_server_id=fallback_server_id,
+            fallback_tool_name=fallback_tool_name,
+            debug=debug,
+        )
+
+    def _apply_web_search_server_preference(
+        self,
+        *,
+        request_text: str,
+        candidate_servers: list[str],
+        enabled_servers: list[str],
+        max_servers: int,
+    ) -> list[str]:
+        ordered = list(candidate_servers)
+        enabled = set(enabled_servers)
+        news_like = self._looks_like_news_search_request(request_text)
+        preferred = ["trendradar", "searxng"] if news_like else ["searxng", "trendradar"]
+        for sid in reversed(preferred):
+            if sid not in enabled:
+                continue
+            if sid in ordered:
+                ordered = [sid] + [item for item in ordered if item != sid]
+            else:
+                ordered = [sid] + ordered
+        return ordered[: max(1, max_servers)]
+
+    def _select_fallback_tool_name(
+        self,
+        *,
+        fallback_server_id: str | None,
+        request_text: str,
+        intent: str,
+        candidate_tools: dict[str, list[str]],
+    ) -> str | None:
+        if not fallback_server_id:
+            return None
+        tools_for_server = candidate_tools.get(fallback_server_id) or []
+        if fallback_server_id == "searxng":
+            if "search" in tools_for_server:
+                return "search"
+            return "search"
+        if fallback_server_id == "trendradar":
+            if intent == "web_search" and self._looks_like_news_search_request(request_text):
+                if "get_latest_news" in tools_for_server:
+                    return "get_latest_news"
+            return "auto"
+        return tools_for_server[0] if tools_for_server else "auto"
+
     # Index configuration is now centralized in create_mcp_tool_index_from_env().
 
     def retrieve(self, prompt: str) -> RetrievalOutput:
@@ -101,6 +271,27 @@ class RuntimeMcpToolRetriever:
 
         w_keyword = float(os.getenv("BFF_MCP_TOOL_RETRIEVAL_W_KEYWORD", "0.40") or 0.40)
         w_vector = float(os.getenv("BFF_MCP_TOOL_RETRIEVAL_W_VECTOR", "0.60") or 0.60)
+
+        fast_output = self._maybe_fast_path_output(
+            intent=intent,
+            request_text=request_text,
+            force_playwright=force_playwright,
+            timing_ms=timing_ms,
+            max_servers=max_servers,
+            started=started,
+        )
+        if fast_output is not None:
+            logger.info(
+                "MCP tool retrieval: "
+                f"intent={intent}, "
+                f"candidate_servers={fast_output.candidate_servers}, "
+                f"server_scores={{}}, "
+                f"focus_scores={{}}, "
+                f"fallback={fast_output.fallback_server_id}/{fast_output.fallback_tool_name}, "
+                f"request='{self._router.request_preview(prompt)}', "
+                "fast_path=True"
+            )
+            return fast_output
 
         search_started = time.perf_counter()
         rows = self._index.search(
@@ -189,11 +380,26 @@ class RuntimeMcpToolRetriever:
 
             candidate_servers = list(candidate_servers)[: max(1, max_servers)]
 
+        apply_search_pref = intent == "web_search" or (
+            intent == "browser_automation"
+            and not force_playwright
+            and self._looks_like_search_request(request_text)
+        )
+        if apply_search_pref:
+            candidate_servers = self._apply_web_search_server_preference(
+                request_text=request_text,
+                candidate_servers=candidate_servers,
+                enabled_servers=enabled_servers,
+                max_servers=max_servers,
+            )
+
         fallback_server_id = candidate_servers[0] if candidate_servers else None
-        fallback_tool_name = None
-        if fallback_server_id:
-            tools_for_server = candidate_tools.get(fallback_server_id) or []
-            fallback_tool_name = tools_for_server[0] if tools_for_server else "auto"
+        fallback_tool_name = self._select_fallback_tool_name(
+            fallback_server_id=fallback_server_id,
+            request_text=request_text,
+            intent=intent,
+            candidate_tools=candidate_tools,
+        )
 
         debug = {
             "refreshed_index": refreshed,

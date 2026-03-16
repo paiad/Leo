@@ -85,6 +85,11 @@ class RuntimeMcpPlanningOrchestrator:
             f"intent: {retrieval.intent}",
             f"retrieval.candidates: {retrieval.candidate_servers or []}",
             (
+                f"retrieval.server_scores ({retrieval.score_mode}): "
+                f"{(retrieval.server_scores or {}) if retrieval.score_mode == 'computed' else 'skipped'}"
+            ),
+            f"retrieval.score_note: {retrieval.score_note or '-'}",
+            (
                 "planner.flags: "
                 f"enabled={planner_enabled}, strict_json={strict_json}, shadow_only={shadow_only}"
             ),
@@ -158,6 +163,9 @@ class RuntimeMcpPlanningOrchestrator:
             retrieval = RetrievalResult(
                 intent="general",
                 candidate_servers=[],
+                server_scores={},
+                score_mode="computed",
+                score_note="short_circuit_general_no_mcp",
                 candidate_tools={},
                 candidate_tool_profiles={},
                 fallback=PlannerFallback(mode="no_mcp", reason="general_intent_short_circuit"),
@@ -214,6 +222,19 @@ class RuntimeMcpPlanningOrchestrator:
         retrieval = RetrievalResult(
             intent=retrieval_output.intent,
             candidate_servers=list(retrieval_output.candidate_servers),
+            server_scores={
+                str(k): float(v)
+                for k, v in (retrieval_output.debug.get("server_scores", {}) or {}).items()
+                if isinstance(k, str)
+            },
+            score_mode=(
+                "skipped" if bool((retrieval_output.debug or {}).get("fast_path")) else "computed"
+            ),
+            score_note=(
+                f"fast_path={(retrieval_output.debug or {}).get('fast_path_reason', 'matched')}"
+                if bool((retrieval_output.debug or {}).get("fast_path"))
+                else "retrieval_scores_computed_from_index"
+            ),
             candidate_tools=dict(retrieval_output.candidate_tools),
             candidate_tool_profiles=dict(retrieval_output.candidate_tool_profiles),
             fallback=(

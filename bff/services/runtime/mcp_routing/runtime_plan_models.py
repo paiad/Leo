@@ -110,6 +110,9 @@ class PlannerOutput(BaseModel):
 class RetrievalResult(BaseModel):
     intent: str
     candidate_servers: list[str] = Field(default_factory=list)
+    server_scores: dict[str, float] = Field(default_factory=dict)
+    score_mode: str = "computed"
+    score_note: str = ""
     candidate_tools: dict[str, list[str]] = Field(default_factory=dict)
     candidate_tool_profiles: dict[str, dict[str, dict[str, Any]]] = Field(default_factory=dict)
     fallback: PlannerFallback

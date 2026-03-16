@@ -680,7 +680,7 @@ def create_mcp_tool_index_from_env() -> McpToolIndexSqlite:
         "BFF_MCP_TOOL_OPENAI_EMBEDDING_MODEL",
         os.getenv("RAG_OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
     )
-    query_embedding_timeout_ms = int(os.getenv("BFF_MCP_TOOL_QUERY_EMBED_TIMEOUT_MS", "2000") or 2000)
+    query_embedding_timeout_ms = int(os.getenv("BFF_MCP_TOOL_QUERY_EMBED_TIMEOUT_MS", "1200") or 1200)
     query_embedding_cache_ttl_s = int(os.getenv("BFF_MCP_TOOL_QUERY_EMBED_CACHE_TTL_S", "900") or 900)
     query_embedding_cache_max_size = int(os.getenv("BFF_MCP_TOOL_QUERY_EMBED_CACHE_MAX_SIZE", "1024") or 1024)
     return McpToolIndexSqlite(
