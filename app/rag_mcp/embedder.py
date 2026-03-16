@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from openai import OpenAI
+from app.logger import logger
 
 
 class Embedder:
@@ -22,7 +24,56 @@ class Embedder:
         if self._local_client is None:
             from sentence_transformers import SentenceTransformer
 
-            self._local_client = SentenceTransformer(self.local_model)
+            device = None
+            dtype = None
+            # Shared embedder for both RAG and MCP tool routing. Allow either env prefix.
+            requested_device = (
+                (os.getenv("BFF_MCP_TOOL_EMBEDDING_DEVICE") or "").strip().lower()
+                or (os.getenv("RAG_EMBEDDING_DEVICE") or "").strip().lower()
+            )
+            if requested_device in {"cuda", "cpu"}:
+                device = requested_device
+
+            requested_dtype = (
+                (os.getenv("BFF_MCP_TOOL_EMBEDDING_DTYPE") or "").strip().lower()
+                or (os.getenv("RAG_EMBEDDING_DTYPE") or "").strip().lower()
+            )
+            if requested_dtype in {"float16", "fp16", "half"}:
+                dtype = "float16"
+            elif requested_dtype in {"bfloat16", "bf16"}:
+                dtype = "bfloat16"
+
+            model_kwargs: dict[str, Any] | None = None
+            if dtype is not None:
+                try:
+                    import torch
+
+                    if dtype == "float16":
+                        model_kwargs = {"torch_dtype": torch.float16}
+                    elif dtype == "bfloat16":
+                        model_kwargs = {"torch_dtype": torch.bfloat16}
+                except Exception:
+                    model_kwargs = None
+
+            try:
+                self._local_client = SentenceTransformer(
+                    self.local_model,
+                    device=device,
+                    model_kwargs=model_kwargs,
+                )
+            except Exception as exc:
+                # Best-effort fallback: if CUDA / dtype settings are not supported
+                # or the GPU is out of memory, fall back to CPU to keep the system usable.
+                logger.warning(
+                    "Embedder init failed, falling back to CPU: "
+                    f"model={self.local_model}, device={device}, dtype={dtype}, error={exc}"
+                )
+                self._local_client = SentenceTransformer(self.local_model, device="cpu")
+
+            logger.info(
+                "Embedder initialized: "
+                f"provider=local, model={self.local_model}, device={getattr(self._local_client, 'device', 'unknown')}"
+            )
         return self._local_client
 
     def _get_openai_client(self) -> OpenAI:
