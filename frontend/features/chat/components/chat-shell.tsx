@@ -521,6 +521,7 @@ export function ChatShell() {
 
     const requestConfig = {
       workspacePrompt: runtimeConfig.workspacePrompt.trim(),
+      requestId: generateClientMessageId("req"),
       model: activeModel?.name,
       baseUrl: activeModel?.baseUrl,
       apiKey: activeModel?.apiKey,

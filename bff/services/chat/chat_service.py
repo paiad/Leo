@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from collections import defaultdict
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from pathlib import Path
@@ -53,6 +54,9 @@ class ChatService:
         self._context_memory = ContextMemoryService(store=store)
         self._lock = asyncio.Lock()
         self._record_lock = asyncio.Lock()
+        self._session_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._request_cache_lock = asyncio.Lock()
+        self._request_response_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._tokenizer = self._init_tokenizer()
         self._record_tz = ZoneInfo("Asia/Shanghai")
         self._record_root = Path(config.root_path) / "logs" / "chat"
@@ -505,6 +509,33 @@ class ChatService:
         if not user_text:
             raise ValueError("content 不能为空")
 
+        session_lock: asyncio.Lock | None = None
+        if payload.sessionId:
+            session_lock = self._session_lock(payload.sessionId)
+        if session_lock is None:
+            return await self._send_message_impl(payload, user_text)
+        async with session_lock:
+            return await self._send_message_impl(payload, user_text)
+
+    async def _send_message_impl(
+        self,
+        payload: ChatRequest,
+        user_text: str,
+    ) -> dict[str, Any]:
+        if payload.sessionId:
+            cached = await self._load_cached_response(
+                session_id=payload.sessionId,
+                request_id=payload.requestId,
+            )
+            if cached:
+                return {
+                    "success": True,
+                    "data": cached,
+                    "toolEvents": [],
+                    "decisionEvents": [],
+                    "error": None,
+                }
+
         session, user_message_id = await self._append_user_message(
             payload.sessionId,
             user_text,
@@ -534,6 +565,11 @@ class ChatService:
             response_text=response_text,
             model=payload.model,
         )
+        await self._store_cached_response(
+            session_id=session.id,
+            request_id=payload.requestId,
+            assistant=assistant,
+        )
 
         return {
             "success": True,
@@ -555,6 +591,50 @@ class ChatService:
                 },
             )
             return
+
+        session_lock: asyncio.Lock | None = None
+        if payload.sessionId:
+            session_lock = self._session_lock(payload.sessionId)
+        if session_lock is None:
+            async for chunk in self._stream_message_impl(payload, user_text):
+                yield chunk
+            return
+        async with session_lock:
+            async for chunk in self._stream_message_impl(payload, user_text):
+                yield chunk
+
+    async def _stream_message_impl(
+        self,
+        payload: ChatRequest,
+        user_text: str,
+    ) -> AsyncGenerator[str, None]:
+        if payload.sessionId:
+            cached = await self._load_cached_response(
+                session_id=payload.sessionId,
+                request_id=payload.requestId,
+            )
+            if cached:
+                normalized_response_text = str(cached.get("content") or "")
+                yield sse_event(
+                    "progress",
+                    {
+                        "phase": "accepted",
+                        "message": "请求已去重，返回已有结果",
+                    },
+                )
+                for chunk in split_chunks(normalized_response_text):
+                    yield sse_event("chunk", {"content": chunk})
+                    await asyncio.sleep(0)
+                yield sse_event(
+                    "done",
+                    {
+                        "done": True,
+                        "messageId": cached.get("id"),
+                        "toolEvents": [],
+                        "decisionEvents": [],
+                    },
+                )
+                return
 
         session, user_message_id = await self._append_user_message(
             payload.sessionId,
@@ -600,6 +680,11 @@ class ChatService:
                 user_text=user_text,
                 response_text=response_text,
                 model=payload.model,
+            )
+            await self._store_cached_response(
+                session_id=session.id,
+                request_id=payload.requestId,
+                assistant=assistant,
             )
             has_persisted_response = True
             return assistant
@@ -678,6 +763,47 @@ class ChatService:
     @staticmethod
     def _is_truthy_env(value: str | None) -> bool:
         return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _normalize_request_id(request_id: str | None) -> str | None:
+        normalized = (request_id or "").strip()
+        return normalized or None
+
+    async def _load_cached_response(
+        self,
+        *,
+        session_id: str,
+        request_id: str | None,
+    ) -> dict[str, Any] | None:
+        normalized_request_id = self._normalize_request_id(request_id)
+        if not normalized_request_id:
+            return None
+        cache_key = (session_id, normalized_request_id)
+        async with self._request_cache_lock:
+            cached = self._request_response_cache.get(cache_key)
+            return dict(cached) if cached else None
+
+    async def _store_cached_response(
+        self,
+        *,
+        session_id: str,
+        request_id: str | None,
+        assistant: dict[str, Any],
+    ) -> None:
+        normalized_request_id = self._normalize_request_id(request_id)
+        if not normalized_request_id:
+            return
+        cache_key = (session_id, normalized_request_id)
+        async with self._request_cache_lock:
+            self._request_response_cache[cache_key] = dict(assistant)
+
+    def _session_lock(self, session_id: str) -> asyncio.Lock:
+        normalized_session_id = (session_id or "").strip()
+        if not normalized_session_id:
+            # Fallback: no session id should not happen for normal flow.
+            # Use a shared lock key to avoid creating unbounded empty keys.
+            normalized_session_id = "__anonymous__"
+        return self._session_locks[normalized_session_id]
 
     def _to_simplified_chinese(self, text: str) -> str:
         if not text:

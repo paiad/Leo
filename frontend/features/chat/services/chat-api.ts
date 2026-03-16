@@ -15,6 +15,7 @@ const DEFAULT_API_BASE_URL = "http://localhost:8000";
 type ChatRequestOptions = {
   workspacePrompt?: string;
   sessionId?: string | null;
+  requestId?: string;
   model?: string;
   baseUrl?: string;
   apiKey?: string;
@@ -230,6 +231,9 @@ function buildChatRequestBody(
   }
   if (options?.sessionId) {
     requestBody.sessionId = options.sessionId;
+  }
+  if (options?.requestId?.trim()) {
+    requestBody.requestId = options.requestId.trim();
   }
   if (options?.model?.trim()) {
     requestBody.model = options.model.trim();

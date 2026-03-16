@@ -17,6 +17,7 @@ def new_id() -> str:
 
 class ChatRequest(BaseModel):
     content: str
+    requestId: str | None = None
     model: str | None = None
     baseUrl: str | None = None
     apiKey: str | None = None
