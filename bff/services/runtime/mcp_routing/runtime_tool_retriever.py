@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -131,6 +132,10 @@ class RuntimeMcpToolRetriever:
         ranked_servers = sorted(server_scores.items(), key=lambda x: (-x[1], x[0]))
         candidate_servers = [sid for sid, _score in ranked_servers[: max(1, max_servers)]]
         timing_ms["rank_build_ms"] = int((time.perf_counter() - rank_started) * 1000)
+        full_server_scores: dict[str, float] = {
+            sid: float(server_scores.get(sid, 0.0))
+            for sid in enabled_servers
+        }
 
         candidate_tools: dict[str, list[str]] = {}
         candidate_tool_profiles: dict[str, dict[str, dict[str, Any]]] = {}
@@ -193,6 +198,10 @@ class RuntimeMcpToolRetriever:
         debug = {
             "refreshed_index": refreshed,
             "request_preview": self._router.request_preview(request_text),
+            "server_scores": {
+                sid: round(score, 4)
+                for sid, score in sorted(full_server_scores.items(), key=lambda item: (-item[1], item[0]))
+            },
             "retrieved_tools": [
                 {
                     "server": tool.server_id,
@@ -205,6 +214,20 @@ class RuntimeMcpToolRetriever:
         }
 
         timing_ms["total_ms"] = int((time.perf_counter() - started) * 1000)
+        rounded_server_scores_all = {
+            sid: round(score, 4)
+            for sid, score in sorted(full_server_scores.items(), key=lambda item: (-item[1], item[0]))
+        }
+        rounded_server_scores = {
+            sid: score for sid, score in rounded_server_scores_all.items() if float(score) > 0.0
+        }
+        focus_scores_all = {
+            "rag": round(float(full_server_scores.get("rag", 0.0)), 4),
+            "playwright": round(float(full_server_scores.get("playwright", 0.0)), 4),
+        }
+        focus_scores = {
+            sid: score for sid, score in focus_scores_all.items() if float(score) > 0.0
+        }
         if self._is_truthy_env(os.getenv("BFF_RUNTIME_TIMING_LOG_ENABLED", "1")):
             lines = [
                 f"intent: {intent}",
@@ -220,6 +243,8 @@ class RuntimeMcpToolRetriever:
                 f"rows: {len(rows)}",
                 f"enabled_servers: {len(enabled_servers)}",
                 f"tools_kept: {len(tools)}",
+                f"focus_scores: {focus_scores}",
+                f"server_scores: {json.dumps(rounded_server_scores, ensure_ascii=False)}",
             ]
             logger.info("\n" + render_ascii_box("MCP TIMING (RETRIEVAL)", lines))
 
@@ -227,6 +252,8 @@ class RuntimeMcpToolRetriever:
             "MCP tool retrieval: "
             f"intent={intent}, "
             f"candidate_servers={candidate_servers}, "
+            f"server_scores={rounded_server_scores}, "
+            f"focus_scores={focus_scores}, "
             f"fallback={fallback_server_id}/{fallback_tool_name}, "
             f"request='{self._router.request_preview(prompt)}'"
         )

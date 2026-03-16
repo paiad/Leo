@@ -132,6 +132,37 @@ def create_app() -> FastAPI:
 
             asyncio.create_task(_auto_discover_and_index())
 
+        warmup_enabled = (os.getenv("BFF_MCP_TOOL_EMBED_WARMUP_ON_STARTUP", "1") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if warmup_enabled:
+            async def _warmup_mcp_tool_query_embedding() -> None:
+                try:
+                    index = create_mcp_tool_index_from_env()
+                    warmup_query = (
+                        os.getenv("BFF_MCP_TOOL_EMBED_WARMUP_QUERY", "打开网页并点击播放视频")
+                        or "打开网页并点击播放视频"
+                    )
+                    warmup_timeout_ms = int(
+                        os.getenv("BFF_MCP_TOOL_EMBED_WARMUP_TIMEOUT_MS", "8000") or 8000
+                    )
+                    result = await asyncio.to_thread(
+                        index.warmup_query_embedding,
+                        warmup_query,
+                        timeout_ms=warmup_timeout_ms,
+                    )
+                    logger.info(
+                        "MCP startup: query embedding warmup finished; "
+                        f"query='{warmup_query}', timeout_ms={warmup_timeout_ms}, result={result}"
+                    )
+                except Exception as exc:
+                    logger.warning(f"MCP startup: query embedding warmup failed: {exc}")
+
+            asyncio.create_task(_warmup_mcp_tool_query_embedding())
+
     @app.on_event("shutdown")
     async def shutdown_services() -> None:
         feishu_long_connection_service.stop()

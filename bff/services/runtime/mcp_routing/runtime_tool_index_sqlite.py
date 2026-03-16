@@ -5,9 +5,12 @@ import os
 import sqlite3
 import re
 import time
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from app.logger import logger
@@ -32,6 +35,7 @@ class ToolIndexRow:
 
 
 class McpToolIndexSqlite:
+    _INDEX_TEXT_VERSION = "2"
     def __init__(
         self,
         *,
@@ -40,6 +44,9 @@ class McpToolIndexSqlite:
         embedding_provider: str,
         embedding_model: str,
         openai_embedding_model: str,
+        query_embedding_timeout_ms: int,
+        query_embedding_cache_ttl_s: int,
+        query_embedding_cache_max_size: int,
     ) -> None:
         self._path = sqlite_path
         self._embeddings_enabled = embeddings_enabled and Embedder is not None
@@ -51,6 +58,15 @@ class McpToolIndexSqlite:
             )
             if self._embeddings_enabled
             else None
+        )
+        self._query_embedding_timeout_s = max(0, int(query_embedding_timeout_ms)) / 1000.0
+        self._query_embedding_cache_ttl_s = max(0, int(query_embedding_cache_ttl_s))
+        self._query_embedding_cache_max_size = max(1, int(query_embedding_cache_max_size))
+        self._query_embedding_cache: OrderedDict[str, tuple[float, list[float]]] = OrderedDict()
+        self._query_embedding_cache_lock = Lock()
+        self._embed_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="mcp-tool-query-embed",
         )
         self._ensure_schema()
 
@@ -184,7 +200,14 @@ class McpToolIndexSqlite:
                     "tools": tools,
                 }
             )
-        raw = json.dumps(items, ensure_ascii=False, sort_keys=True)
+        raw = json.dumps(
+            {
+                "index_text_version": McpToolIndexSqlite._INDEX_TEXT_VERSION,
+                "items": items,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
         # Fast hash that is stable enough for change detection.
         import hashlib
 
@@ -228,6 +251,11 @@ class McpToolIndexSqlite:
                     if not tool_name:
                         continue
                     tool_desc = str(getattr(tool, "description", "") or "").strip()
+                    media_hint = self._playwright_media_hint_text(
+                        server_id=sid,
+                        tool_name=tool_name,
+                        tool_desc=tool_desc,
+                    )
                     input_schema = getattr(tool, "inputSchema", {}) or {}
                     schema_json = json.dumps(input_schema, ensure_ascii=False)
                     title = f"{sid}/{tool_name}"
@@ -240,6 +268,7 @@ class McpToolIndexSqlite:
                             server_desc,
                             f"category:{category}" if category else "",
                             capability_hint,
+                            media_hint,
                             tool_desc,
                             f"schema_keys: {schema_keys}" if schema_keys else "",
                         ]
@@ -326,6 +355,24 @@ class McpToolIndexSqlite:
         return "capability_hints: " + " ".join(parts)
 
     @staticmethod
+    def _playwright_media_hint_text(
+        *,
+        server_id: str,
+        tool_name: str,
+        tool_desc: str,
+    ) -> str:
+        if (server_id or "").strip().lower() != "playwright":
+            return ""
+        lowered_name = (tool_name or "").strip().lower()
+        lowered_desc = (tool_desc or "").strip().lower()
+        if not (lowered_name.startswith("browser_") or "browser" in lowered_desc):
+            return ""
+        return (
+            "media_hints: 看 想看 观看 播放 继续播放 暂停 视频 节目 综艺 电视剧 电影 "
+            "短视频 B站 bilibili youtube watch play video episode show"
+        )
+
+    @staticmethod
     def _extract_schema_keys(schema: dict[str, Any]) -> set[str]:
         keys: set[str] = set()
         stack = [schema]
@@ -352,6 +399,102 @@ class McpToolIndexSqlite:
     @staticmethod
     def _dot(a: list[float], b: list[float]) -> float:
         return float(sum(x * y for x, y in zip(a, b, strict=False)))
+
+    def _get_cached_query_embedding(self, normalized_query: str) -> list[float] | None:
+        if self._query_embedding_cache_ttl_s <= 0:
+            return None
+        now = time.time()
+        with self._query_embedding_cache_lock:
+            item = self._query_embedding_cache.get(normalized_query)
+            if not item:
+                return None
+            cached_at, vector = item
+            if (now - cached_at) > float(self._query_embedding_cache_ttl_s):
+                self._query_embedding_cache.pop(normalized_query, None)
+                return None
+            self._query_embedding_cache.move_to_end(normalized_query)
+            return list(vector)
+
+    def _set_cached_query_embedding(self, normalized_query: str, vector: list[float]) -> None:
+        if self._query_embedding_cache_ttl_s <= 0:
+            return
+        now = time.time()
+        with self._query_embedding_cache_lock:
+            self._query_embedding_cache[normalized_query] = (now, list(vector))
+            self._query_embedding_cache.move_to_end(normalized_query)
+            while len(self._query_embedding_cache) > self._query_embedding_cache_max_size:
+                self._query_embedding_cache.popitem(last=False)
+
+    def _embed_query_with_timeout(self, normalized_query: str) -> tuple[list[float] | None, int, str]:
+        if not self._embedder:
+            return None, 0, "disabled"
+
+        started = time.perf_counter()
+        timeout_s = self._query_embedding_timeout_s
+        if timeout_s <= 0:
+            try:
+                vectors = self._embedder.embed_texts([normalized_query])
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                return (vectors[0] if vectors else None), elapsed_ms, "ok"
+            except Exception:
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                return None, elapsed_ms, "error"
+
+        future = self._embed_executor.submit(self._embedder.embed_texts, [normalized_query])
+        try:
+            vectors = future.result(timeout=timeout_s)
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            return (vectors[0] if vectors else None), elapsed_ms, "ok"
+        except FutureTimeoutError:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            future.cancel()
+            return None, elapsed_ms, "timeout"
+        except Exception:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            return None, elapsed_ms, "error"
+
+    def warmup_query_embedding(
+        self,
+        query: str = "打开网页并点击播放视频",
+        *,
+        timeout_ms: int | None = None,
+    ) -> dict[str, object]:
+        normalized_query = self._normalize_text(query)
+        if not normalized_query:
+            return {"ok": False, "mode": "empty_query", "elapsed_ms": 0}
+        if not (self._embeddings_enabled and self._embedder):
+            return {"ok": False, "mode": "disabled", "elapsed_ms": 0}
+
+        cached = self._get_cached_query_embedding(normalized_query)
+        if cached is not None:
+            return {"ok": True, "mode": "cache_hit", "elapsed_ms": 0}
+
+        if timeout_ms is not None and int(timeout_ms) > 0 and self._embedder is not None:
+            started = time.perf_counter()
+            future = self._embed_executor.submit(self._embedder.embed_texts, [normalized_query])
+            try:
+                vectors = future.result(timeout=max(1, int(timeout_ms)) / 1000.0)
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                query_vec = vectors[0] if vectors else None
+                mode = "ok"
+            except FutureTimeoutError:
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                future.cancel()
+                query_vec = None
+                mode = "timeout"
+            except Exception:
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                query_vec = None
+                mode = "error"
+        else:
+            query_vec, elapsed_ms, mode = self._embed_query_with_timeout(normalized_query)
+        if query_vec is not None:
+            self._set_cached_query_embedding(normalized_query, query_vec)
+        return {
+            "ok": bool(query_vec is not None),
+            "mode": mode,
+            "elapsed_ms": int(elapsed_ms),
+        }
 
     def search(
         self,
@@ -417,14 +560,19 @@ class McpToolIndexSqlite:
 
         embed_ms = 0
         query_vec: list[float] | None = None
+        embed_mode = "disabled"
         if self._embeddings_enabled and self._embedder:
-            try:
-                embed_started = time.perf_counter()
-                vectors = self._embedder.embed_texts([normalized_query])
-                embed_ms = int((time.perf_counter() - embed_started) * 1000)
-                query_vec = vectors[0] if vectors else None
-            except Exception:
-                query_vec = None
+            if w_vector <= 0:
+                embed_mode = "skipped_w_vector=0"
+            else:
+                cached = self._get_cached_query_embedding(normalized_query)
+                if cached is not None:
+                    query_vec = cached
+                    embed_mode = "cache_hit"
+                else:
+                    query_vec, embed_ms, embed_mode = self._embed_query_with_timeout(normalized_query)
+                    if query_vec is not None:
+                        self._set_cached_query_embedding(normalized_query, query_vec)
 
         score_started = time.perf_counter()
         rows: list[ToolIndexRow] = []
@@ -473,7 +621,10 @@ class McpToolIndexSqlite:
                     f"total_ms: {total_ms}",
                     f"db_fetch_ms: {db_fetch_ms} (docs={docs_count})",
                     f"fts_ms: {fts_ms} (hits={hits_count}, fts_topk={int(fts_topk or 0)})",
-                    f"embed_ms: {embed_ms} (embeddings_enabled={bool(self._embeddings_enabled and self._embedder)})",
+                    (
+                        f"embed_ms: {embed_ms} "
+                        f"(embeddings_enabled={bool(self._embeddings_enabled and self._embedder)}, mode={embed_mode})"
+                    ),
                     f"score_ms: {score_ms}",
                     f"sort_ms: {sort_ms}",
                     f"topk: {int(topk)}",
@@ -529,10 +680,16 @@ def create_mcp_tool_index_from_env() -> McpToolIndexSqlite:
         "BFF_MCP_TOOL_OPENAI_EMBEDDING_MODEL",
         os.getenv("RAG_OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
     )
+    query_embedding_timeout_ms = int(os.getenv("BFF_MCP_TOOL_QUERY_EMBED_TIMEOUT_MS", "2000") or 2000)
+    query_embedding_cache_ttl_s = int(os.getenv("BFF_MCP_TOOL_QUERY_EMBED_CACHE_TTL_S", "900") or 900)
+    query_embedding_cache_max_size = int(os.getenv("BFF_MCP_TOOL_QUERY_EMBED_CACHE_MAX_SIZE", "1024") or 1024)
     return McpToolIndexSqlite(
         sqlite_path=sqlite_path,
         embeddings_enabled=embeddings_enabled,
         embedding_provider=str(provider).strip().lower(),
         embedding_model=str(local_model).strip(),
         openai_embedding_model=str(openai_model).strip(),
+        query_embedding_timeout_ms=query_embedding_timeout_ms,
+        query_embedding_cache_ttl_s=query_embedding_cache_ttl_s,
+        query_embedding_cache_max_size=query_embedding_cache_max_size,
     )
