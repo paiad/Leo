@@ -150,6 +150,8 @@ FEISHU_AUDIO_ASR_COMPUTE_TYPE_CUDA=int8_float16
 FEISHU_AUDIO_ASR_COMPUTE_TYPE_CPU=int8
 # 语音识别语言，中文可设 zh
 FEISHU_AUDIO_ASR_LANGUAGE=zh
+# 可选：指定 HuggingFace 缓存目录（避免默认用户缓存出现下载中断/0 字节 model.bin 导致 ASR 失败）
+FEISHU_AUDIO_ASR_HF_CACHE_DIR=D:\cache\huggingface
 ```
 
 依赖：
