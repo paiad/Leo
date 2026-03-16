@@ -53,6 +53,11 @@ class RuntimeMcpToolRetriever:
         normalized = self._router.normalized_current_user_request(prompt)
         intent = self._router.classify_prompt_intent(prompt)
         router_ms = int((time.perf_counter() - router_started) * 1000)
+        force_playwright = False
+        try:
+            force_playwright = bool(self._router.should_force_playwright_for_prompt(prompt))
+        except Exception:
+            force_playwright = False
 
         timing_ms: dict[str, int] = {
             "total_ms": 0,
@@ -147,6 +152,37 @@ class RuntimeMcpToolRetriever:
             candidate_tools[sid] = names
             candidate_tool_profiles[sid] = profiles
         timing_ms["profiles_build_ms"] = int((time.perf_counter() - profiles_started) * 1000)
+
+        if force_playwright and "playwright" in set(enabled_servers):
+            # Browser actions should prefer Playwright even if semantic retrieval
+            # matches domain MCP servers more strongly (e.g. TrendRadar mentions "B站").
+            forced_sid = "playwright"
+            if forced_sid in candidate_servers:
+                candidate_servers = [forced_sid] + [sid for sid in candidate_servers if sid != forced_sid]
+            else:
+                candidate_servers = [forced_sid] + list(candidate_servers)
+
+            # Populate a minimal tool list for planner hints even when retrieval rows
+            # don't include Playwright tools.
+            if not (candidate_tools.get(forced_sid) or []):
+                names = self._index.list_enabled_tool_names(server_id=forced_sid, limit=30)
+                name_set = set(names)
+                preferred_order = [
+                    "browser_navigate",
+                    "browser_type",
+                    "browser_click",
+                    "browser_fill_form",
+                    "browser_snapshot",
+                    "browser_take_screenshot",
+                    "browser_press_key",
+                    "browser_tabs",
+                ]
+                ordered = [name for name in preferred_order if name in name_set]
+                ordered.extend([name for name in names if name not in set(ordered)])
+                candidate_tools[forced_sid] = ordered[:15]
+                candidate_tool_profiles.setdefault(forced_sid, {})
+
+            candidate_servers = list(candidate_servers)[: max(1, max_servers)]
 
         fallback_server_id = candidate_servers[0] if candidate_servers else None
         fallback_tool_name = None

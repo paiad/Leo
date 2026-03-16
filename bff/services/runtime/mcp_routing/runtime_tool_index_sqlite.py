@@ -282,6 +282,27 @@ class McpToolIndexSqlite:
             conn.commit()
         return True
 
+    def list_enabled_tool_names(self, *, server_id: str, limit: int = 30) -> list[str]:
+        sid = (server_id or "").strip().lower()
+        if not sid:
+            return []
+        try:
+            with self._connect() as conn:
+                cur = conn.cursor()
+                rows = cur.execute(
+                    """
+                    SELECT tool_name
+                    FROM tool_docs
+                    WHERE server_id = ? AND enabled = 1
+                    ORDER BY tool_name
+                    LIMIT ?
+                    """,
+                    (sid, max(1, int(limit))),
+                ).fetchall()
+                return [str(row["tool_name"] or "").strip().lower() for row in rows if row["tool_name"]]
+        except Exception:
+            return []
+
     @staticmethod
     def _capability_hint_text(capability_profile: dict[str, Any]) -> str:
         if not isinstance(capability_profile, dict) or not capability_profile:
