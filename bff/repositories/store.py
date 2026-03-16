@@ -208,12 +208,16 @@ class PostgresStore:
                         model TEXT,
                         user_input_type TEXT NOT NULL DEFAULT 'text',
                         tool_events_json TEXT NOT NULL DEFAULT '[]',
-                        decision_events_json TEXT NOT NULL DEFAULT '[]'
+                        decision_events_json TEXT NOT NULL DEFAULT '[]',
+                        timeline_events_json TEXT NOT NULL DEFAULT '[]'
                     )
                     """
                 )
                 cur.execute(
                     "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS user_input_type TEXT NOT NULL DEFAULT 'text'"
+                )
+                cur.execute(
+                    "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS timeline_events_json TEXT NOT NULL DEFAULT '[]'"
                 )
                 cur.execute(
                     """
@@ -317,7 +321,7 @@ class PostgresStore:
 
                 cur.execute(
                     """
-                    SELECT id, session_id, role, content, created_at, model, user_input_type, tool_events_json, decision_events_json
+                    SELECT id, session_id, role, content, created_at, model, user_input_type, tool_events_json, decision_events_json, timeline_events_json
                     FROM chat_messages
                     ORDER BY created_at ASC, id ASC
                     """
@@ -347,6 +351,7 @@ class PostgresStore:
             try:
                 tool_events = json.loads(str(row["tool_events_json"] or "[]"))
                 decision_events = json.loads(str(row["decision_events_json"] or "[]"))
+                timeline_events = json.loads(str(row.get("timeline_events_json") or "[]"))
                 session.messages.append(
                     MessageRecord(
                         id=str(row["id"]),
@@ -359,6 +364,7 @@ class PostgresStore:
                         ),
                         toolEvents=tool_events if isinstance(tool_events, list) else [],
                         decisionEvents=decision_events if isinstance(decision_events, list) else [],
+                        timelineEvents=timeline_events if isinstance(timeline_events, list) else [],
                     )
                 )
             except Exception:
@@ -547,7 +553,8 @@ class PostgresStore:
                             model,
                             user_input_type,
                             tool_events_json,
-                            decision_events_json
+                            decision_events_json,
+                            timeline_events_json
                         FROM chat_messages
                         WHERE session_id = ANY(%s)
                         """,
@@ -568,6 +575,7 @@ class PostgresStore:
                             ("audio_asr" if str(row["user_input_type"] or "text") == "audio_asr" else "text"),
                             str(row["tool_events_json"] or "[]"),
                             str(row["decision_events_json"] or "[]"),
+                            str(row.get("timeline_events_json") or "[]"),
                         )
 
                     for sid, session in self.sessions.items():
@@ -593,6 +601,9 @@ class PostgresStore:
                             serialized_decision_events = json.dumps(
                                 msg.decisionEvents or [], ensure_ascii=False
                             )
+                            serialized_timeline_events = json.dumps(
+                                msg.timelineEvents or [], ensure_ascii=False
+                            )
                             current_payload = (
                                 msg.role,
                                 msg.content,
@@ -601,6 +612,7 @@ class PostgresStore:
                                 ("audio_asr" if msg.userInputType == "audio_asr" else "text"),
                                 serialized_tool_events,
                                 serialized_decision_events,
+                                serialized_timeline_events,
                             )
                             if existing_payload.get(msg.id) != current_payload:
                                 changed_messages.append(msg)
@@ -609,9 +621,9 @@ class PostgresStore:
                             cur.executemany(
                                 """
                                 INSERT INTO chat_messages (
-                                    id, session_id, role, content, created_at, model, user_input_type, tool_events_json, decision_events_json
+                                    id, session_id, role, content, created_at, model, user_input_type, tool_events_json, decision_events_json, timeline_events_json
                                 )
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                 ON CONFLICT (id) DO UPDATE
                                 SET
                                     session_id = EXCLUDED.session_id,
@@ -621,7 +633,8 @@ class PostgresStore:
                                     model = EXCLUDED.model,
                                     user_input_type = EXCLUDED.user_input_type,
                                     tool_events_json = EXCLUDED.tool_events_json,
-                                    decision_events_json = EXCLUDED.decision_events_json
+                                    decision_events_json = EXCLUDED.decision_events_json,
+                                    timeline_events_json = EXCLUDED.timeline_events_json
                                 """,
                                 [
                                     (
@@ -634,6 +647,7 @@ class PostgresStore:
                                         ("audio_asr" if msg.userInputType == "audio_asr" else "text"),
                                         json.dumps(msg.toolEvents or [], ensure_ascii=False),
                                         json.dumps(msg.decisionEvents or [], ensure_ascii=False),
+                                        json.dumps(msg.timelineEvents or [], ensure_ascii=False),
                                     )
                                     for msg in changed_messages
                                 ],

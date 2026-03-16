@@ -7,6 +7,7 @@ import type {
   ChatRoutingEvent,
   ChatMcpServer,
   ChatToolEvent,
+  ChatTimelineEvent,
   ChatToolTransportType,
 } from "@/features/chat/types/chat";
 
@@ -32,6 +33,7 @@ type ChatMessageApiResponse = {
     model?: string;
     toolEvents?: ChatToolEvent[];
     decisionEvents?: ChatDecisionEvent[];
+    timelineEvents?: ChatTimelineEvent[];
   } | null;
   toolEvents?: ChatToolEvent[];
   decisionEvents?: ChatDecisionEvent[];
@@ -77,6 +79,7 @@ type ChatMessageListApiResponse = {
     model?: string;
     toolEvents?: ChatToolEvent[];
     decisionEvents?: ChatDecisionEvent[];
+    timelineEvents?: ChatTimelineEvent[];
   }[];
   error: string | null;
 };
@@ -692,6 +695,38 @@ export async function clearChatSessionMessages(sessionId: string): Promise<numbe
   }
 
   return payload.data?.deletedCount ?? 0;
+}
+
+export async function updateChatMessageTimeline(
+  sessionId: string,
+  messageId: string,
+  timelineEvents: ChatTimelineEvent[],
+): Promise<ChatMessage> {
+  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE_URL;
+  const response = await fetch(`${baseUrl}/api/v1/chat/sessions/${sessionId}/messages/${messageId}/timeline`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ timelineEvents }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`保存时间线失败：HTTP ${response.status}`);
+  }
+
+  const payload = (await response.json()) as {
+    success: boolean;
+    data: ChatMessage | null;
+    error: string | null;
+  };
+
+  if (!payload.success || !payload.data) {
+    throw new Error(payload.error ?? "保存时间线失败");
+  }
+
+  return payload.data;
 }
 
 export async function fetchPlatformSystemPrompt(): Promise<string> {

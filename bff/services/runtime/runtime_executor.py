@@ -15,6 +15,7 @@ from bff.services.runtime.mcp_routing.runtime_logviz import render_ascii_box
 from bff.services.runtime.mcp_routing.runtime_plan_models import PlannerStep
 from bff.services.runtime.mcp_routing.runtime_planning import RuntimeMcpPlanningOrchestrator
 from bff.services.runtime.runtime_policy import RuntimePolicy
+from bff.utils.env import get_env
 
 
 @dataclass
@@ -58,6 +59,27 @@ class RuntimeExecutor:
             tool for tool in agent.available_tools.tools if not isinstance(tool, MCPClientTool)
         )
         agent.available_tools = ToolCollection(*filtered_tools)
+
+    @staticmethod
+    def _scope_tools_to_server(agent: Manus, server_id: str) -> ToolCollection:
+        """
+        Keep only tools from the target MCP server (+ terminate) for the current plan step.
+        This prevents the model from drifting to unrelated local tools (e.g. python/editor).
+        """
+        from app.tool.mcp import MCPClientTool
+
+        sid = (server_id or "").strip().lower()
+        keep_non_mcp = {"terminate"}
+        filtered = []
+        for tool in agent.available_tools.tools:
+            name = str(getattr(tool, "name", "") or "").strip().lower()
+            if isinstance(tool, MCPClientTool):
+                if getattr(tool, "server_id", "").strip().lower() == sid:
+                    filtered.append(tool)
+                continue
+            if name in keep_non_mcp:
+                filtered.append(tool)
+        return ToolCollection(*tuple(filtered))
 
     async def execute_turn(
         self,
@@ -210,15 +232,15 @@ class RuntimeExecutor:
                 if key in decision.timing_ms:
                     timing_ms[key] = int(decision.timing_ms.get(key) or 0)
             plan = decision.execute_plan
-            multi_step_enabled = self._policy.is_truthy_env(
-                os.getenv("BFF_RUNTIME_MULTI_STEP_EXECUTION", "0")
-            )
+            multi_step_raw = get_env("BFF_RUNTIME_MULTI_STEP_EXECUTION", "0")
+            multi_step_enabled = self._policy.is_truthy_env(multi_step_raw)
             logger.info(
                 "MCP execution decision: "
                 f"source={decision.execute_source}, "
                 f"shadow_only={decision.shadow_only}, "
                 f"gate_error={decision.gate_error_code}, "
                 f"need_mcp={plan.need_mcp}, "
+                f"multi_step_enabled={multi_step_enabled}({multi_step_raw}), "
                 f"steps={[{'server': s.server_id, 'tool': s.tool_name} for s in plan.plan_steps]}"
             )
 
@@ -285,13 +307,18 @@ class RuntimeExecutor:
                 retry=False,
             )
             run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(step_prompt)
-            agent_started = time.perf_counter()
-            raw = await self._run_agent(
-                agent=agent,
-                run_prompt=run_prompt,
-                time_budget_seconds=time_budget_seconds,
-                run_state=run_state,
-            )
+            original_tools = agent.available_tools
+            agent.available_tools = self._scope_tools_to_server(agent, step.server_id)
+            try:
+                agent_started = time.perf_counter()
+                raw = await self._run_agent(
+                    agent=agent,
+                    run_prompt=run_prompt,
+                    time_budget_seconds=time_budget_seconds,
+                    run_state=run_state,
+                )
+            finally:
+                agent.available_tools = original_tools
             timing_ms["agent_run_ms"] += int((time.perf_counter() - agent_started) * 1000)
             timing_ms["agent_runs"] += 1
             return RuntimeExecutionResult(
@@ -348,13 +375,18 @@ class RuntimeExecutor:
                 retry=False,
             )
             run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(step_prompt)
-            agent_started = time.perf_counter()
-            raw = await self._run_agent(
-                agent=agent,
-                run_prompt=run_prompt,
-                time_budget_seconds=time_budget_seconds,
-                run_state=run_state,
-            )
+            original_tools = agent.available_tools
+            agent.available_tools = self._scope_tools_to_server(agent, step.server_id)
+            try:
+                agent_started = time.perf_counter()
+                raw = await self._run_agent(
+                    agent=agent,
+                    run_prompt=run_prompt,
+                    time_budget_seconds=time_budget_seconds,
+                    run_state=run_state,
+                )
+            finally:
+                agent.available_tools = original_tools
             timing_ms["agent_run_ms"] += int((time.perf_counter() - agent_started) * 1000)
             timing_ms["agent_runs"] += 1
 
@@ -378,13 +410,18 @@ class RuntimeExecutor:
                     retry=True,
                 )
                 retry_run_prompt = self._mcp_router.augment_prompt_with_mcp_catalog(retry_prompt)
-                retry_started = time.perf_counter()
-                raw = await self._run_agent(
-                    agent=agent,
-                    run_prompt=retry_run_prompt,
-                    time_budget_seconds=time_budget_seconds,
-                    run_state=run_state,
-                )
+                original_tools = agent.available_tools
+                agent.available_tools = self._scope_tools_to_server(agent, step.server_id)
+                try:
+                    retry_started = time.perf_counter()
+                    raw = await self._run_agent(
+                        agent=agent,
+                        run_prompt=retry_run_prompt,
+                        time_budget_seconds=time_budget_seconds,
+                        run_state=run_state,
+                    )
+                finally:
+                    agent.available_tools = original_tools
                 timing_ms["agent_run_ms"] += int((time.perf_counter() - retry_started) * 1000)
                 timing_ms["agent_runs"] += 1
                 retry_delta = list(agent.messages[retry_before:])

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import time
 from typing import Any
@@ -48,7 +49,22 @@ class RuntimeMcpPlanningOrchestrator:
     def _should_render_timing_logs(self) -> bool:
         return self._is_truthy_env(os.getenv("BFF_RUNTIME_TIMING_LOG_ENABLED", "1"))
 
-    def _log_timing_box(self, request_preview: str, timing_ms: dict[str, int]) -> None:
+    @staticmethod
+    def _truncate_for_log(value: str, *, limit: int = 1200) -> str:
+        if len(value) <= limit:
+            return value
+        return f"{value[:limit]}...<truncated>"
+
+    def _serialize_plan_for_log(self, plan: PlannerOutput | None) -> str:
+        if plan is None:
+            return "-"
+        return self._truncate_for_log(
+            json.dumps(plan.model_dump(exclude_none=True), ensure_ascii=False, separators=(",", ":"))
+        )
+
+    def _log_timing_box(
+        self, request_preview: str, timing_ms: dict[str, int], *, plan: PlannerOutput | None = None
+    ) -> None:
         if not self._should_render_timing_logs():
             return
 
@@ -58,6 +74,7 @@ class RuntimeMcpPlanningOrchestrator:
             f"planning.retrieval_ms: {timing_ms.get('planning_retrieval_ms', 0)}",
             f"planning.planner_ms: {timing_ms.get('planning_planner_ms', 0)}",
             f"planning.gatekeeper_ms: {timing_ms.get('planning_gatekeeper_ms', 0)}",
+            f"plan: {self._serialize_plan_for_log(plan)}",
         ]
         logger.info("\n" + render_ascii_box("MCP TIMING (PLAN)", lines))
 
@@ -213,7 +230,9 @@ class RuntimeMcpPlanningOrchestrator:
                 gate_ok=None,
                 gate_error=None,
             )
-            self._log_timing_box(request_preview, timing_ms)
+            self._log_timing_box(
+                request_preview, timing_ms, plan=(decision.planner_plan or decision.execute_plan)
+            )
             return decision
 
         retrieval_started = time.perf_counter()
@@ -302,7 +321,9 @@ class RuntimeMcpPlanningOrchestrator:
                 gate_ok=None,
                 gate_error=None,
             )
-            self._log_timing_box(request_preview, timing_ms)
+            self._log_timing_box(
+                request_preview, timing_ms, plan=(decision.planner_plan or decision.execute_plan)
+            )
             return decision
 
         if not retrieval.candidate_servers:
@@ -332,7 +353,9 @@ class RuntimeMcpPlanningOrchestrator:
                 gate_ok=None,
                 gate_error=None,
             )
-            self._log_timing_box(request_preview, timing_ms)
+            self._log_timing_box(
+                request_preview, timing_ms, plan=(decision.planner_plan or decision.execute_plan)
+            )
             return decision
 
         planner_started = time.perf_counter()
@@ -411,7 +434,9 @@ class RuntimeMcpPlanningOrchestrator:
                 gate_ok=False,
                 gate_error=f"{planner_raw.error_code or ERROR_INVALID_JSON}: {planner_raw.error_message or ''}".strip(),
             )
-            self._log_timing_box(request_preview, timing_ms)
+            self._log_timing_box(
+                request_preview, timing_ms, plan=(decision.planner_plan or decision.execute_plan)
+            )
             return decision
 
         gatekeeper_started = time.perf_counter()
@@ -480,7 +505,9 @@ class RuntimeMcpPlanningOrchestrator:
                 gate_ok=False,
                 gate_error=f"{validation.error_code or ''}: {validation.error_message or ''}".strip(),
             )
-            self._log_timing_box(request_preview, timing_ms)
+            self._log_timing_box(
+                request_preview, timing_ms, plan=(decision.planner_plan or decision.execute_plan)
+            )
             return decision
 
         if shadow_only:
@@ -515,7 +542,9 @@ class RuntimeMcpPlanningOrchestrator:
                 gate_ok=True,
                 gate_error=None,
             )
-            self._log_timing_box(request_preview, timing_ms)
+            self._log_timing_box(
+                request_preview, timing_ms, plan=(decision.planner_plan or decision.execute_plan)
+            )
             return decision
 
         logger.info(
@@ -550,5 +579,7 @@ class RuntimeMcpPlanningOrchestrator:
             gate_ok=True,
             gate_error=None,
         )
-        self._log_timing_box(request_preview, timing_ms)
+        self._log_timing_box(
+            request_preview, timing_ms, plan=(decision.planner_plan or decision.execute_plan)
+        )
         return decision

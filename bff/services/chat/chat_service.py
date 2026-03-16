@@ -40,6 +40,8 @@ def split_chunks(text: str, chunk_size: int = 120) -> list[str]:
 
 
 class ChatService:
+    MAX_TIMELINE_EVENTS = 120
+
     def __init__(
         self,
         store: InMemoryStore | PostgresStore,
@@ -460,6 +462,34 @@ class ChatService:
         if before != len(session.messages):
             self._store.persist_sessions()
         return before != len(session.messages)
+
+    async def update_message_timeline(
+        self,
+        session_id: str,
+        message_id: str,
+        timeline_events: list[dict[str, Any]] | None,
+    ) -> dict[str, Any] | None:
+        async with self._lock:
+            session = self._store.sessions.get(session_id)
+            if not session:
+                return None
+
+            target_index = -1
+            for index, message in enumerate(session.messages):
+                if message.id == message_id:
+                    target_index = index
+                    break
+            if target_index < 0:
+                return None
+
+            target_message = session.messages[target_index]
+            normalized_events = (
+                [item for item in (timeline_events or []) if isinstance(item, dict)]
+            )[-self.MAX_TIMELINE_EVENTS :]
+            target_message.timelineEvents = normalized_events
+            session.updatedAt = now_iso()
+            self._store.persist_sessions()
+            return target_message.model_dump()
 
     async def clear_session_messages(self, session_id: str) -> int | None:
         async with self._lock:

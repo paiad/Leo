@@ -41,7 +41,12 @@ class MessageRecord(BaseModel):
     model: str | None = None
     toolEvents: list[dict[str, Any]] = Field(default_factory=list)
     decisionEvents: list[dict[str, Any]] = Field(default_factory=list)
+    timelineEvents: list[dict[str, Any]] = Field(default_factory=list)
     userInputType: Literal["text", "audio_asr"] = "text"
+
+
+class UpdateMessageTimelineRequest(BaseModel):
+    timelineEvents: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SessionRecord(BaseModel):

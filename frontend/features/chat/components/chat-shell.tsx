@@ -13,6 +13,7 @@ import {
   fetchPlatformSystemPrompt,
   sendChatMessage,
   streamChatMessage,
+  updateChatMessageTimeline,
 } from "@/features/chat/services/chat-api";
 import type { ChatMessage, ChatRuntimeConfig, ChatTimelineEvent } from "@/features/chat/types/chat";
 import { useModelContext } from "@/features/models/context/model-context";
@@ -37,6 +38,8 @@ type StreamProgressDisplayPayload = {
   durationMs?: number;
   error?: string | null;
 };
+
+const MAX_TIMELINE_EVENTS = 120;
 
 function generateClientMessageId(prefix: string): string {
   const uuid = globalThis.crypto?.randomUUID?.();
@@ -65,12 +68,18 @@ function formatProgressText(
       return "请求已接收";
     }
     if (payload.phase === "runtime_start") {
-      return "运行中";
+      return payload.reason?.trim() ? `运行中：${payload.reason.trim()}` : "运行中";
     }
     if (payload.phase === "step_start") {
+      if (payload.step && payload.maxSteps) {
+        return `执行步骤 ${payload.step}/${payload.maxSteps}`;
+      }
       return payload.step ? `执行步骤 ${payload.step}` : "执行步骤";
     }
     if (payload.phase === "step_done") {
+      if (payload.step && payload.maxSteps) {
+        return `步骤 ${payload.step}/${payload.maxSteps} 完成`;
+      }
       return payload.step ? `步骤 ${payload.step} 完成` : "步骤完成";
     }
     if (payload.phase === "runtime_done") {
@@ -80,10 +89,7 @@ function formatProgressText(
       return "流程已停止";
     }
     if (payload.message?.trim()) {
-      const sanitized = payload.message
-        .replace(/\/\d+\b/g, "")
-        .replace(/最多\s*\d+\s*步/g, "")
-        .trim();
+      const sanitized = payload.message.replace(/\s+/g, " ").trim();
       return sanitized || "处理中";
     }
     return "处理中";
@@ -301,6 +307,47 @@ export function ChatShell() {
   }, [activeSessionId]);
 
   useEffect(() => {
+    if (activeSource !== "lark" || isSending) {
+      return;
+    }
+
+    let cancelled = false;
+    const resolveLatestLarkSession = async () => {
+      try {
+        const sessions = await fetchChatSessions();
+        if (cancelled) {
+          return;
+        }
+        const latestLarkSession = sessions
+          .filter((session) => inferSessionSource(session) === "lark")
+          .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+        if (!latestLarkSession) {
+          return;
+        }
+        setSessionBySource((prev) => {
+          if (prev.lark === latestLarkSession.id) {
+            return prev;
+          }
+          window.localStorage.setItem(CHAT_LARK_SESSION_STORAGE_KEY, latestLarkSession.id);
+          return { ...prev, lark: latestLarkSession.id };
+        });
+      } catch {
+        // best-effort discovery; ignore transient network errors
+      }
+    };
+
+    void resolveLatestLarkSession();
+    const timer = window.setInterval(() => {
+      void resolveLatestLarkSession();
+    }, 4000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeSource, isSending]);
+
+  useEffect(() => {
     if (activeSource !== "lark" || !activeSessionId || isSending) {
       return;
     }
@@ -489,10 +536,15 @@ export function ChatShell() {
         }
         const history = message.timelineEvents ?? [];
         const last = history[history.length - 1];
-        if (last && last.phase === event.phase && last.text === event.text) {
+        if (
+          last &&
+          last.phase === event.phase &&
+          last.text === event.text &&
+          last.status === event.status
+        ) {
           return message;
         }
-        const nextTimeline = [...history, event].slice(-30);
+        const nextTimeline = [...history, event].slice(-MAX_TIMELINE_EVENTS);
         return { ...message, timelineEvents: nextTimeline };
       }),
     );
@@ -546,10 +598,30 @@ export function ChatShell() {
     const assistantMessageId = generateClientMessageId("msg-assistant");
     setPendingAssistantMessageId(assistantMessageId);
     let finalAssistantMessageId = assistantMessageId;
+    let timelineMessageId = assistantMessageId;
+    let timelineForPersistence: ChatTimelineEvent[] = [];
     let streamedContent = "";
     let hasStreamChunk = false;
     let hasReplyStartEvent = false;
     let shouldRemoveAssistantPlaceholder = false;
+    let hasPersistedTimeline = false;
+    const pushTimelineEvent = (
+      messageId: string,
+      event: ChatTimelineEvent,
+    ) => {
+      timelineMessageId = messageId;
+      appendTimelineEvent(messageId, event);
+      const last = timelineForPersistence[timelineForPersistence.length - 1];
+      if (
+        last &&
+        last.phase === event.phase &&
+        last.text === event.text &&
+        last.status === event.status
+      ) {
+        return;
+      }
+      timelineForPersistence = [...timelineForPersistence, event].slice(-MAX_TIMELINE_EVENTS);
+    };
     appendMessage({
       id: assistantMessageId,
       role: "assistant",
@@ -567,7 +639,7 @@ export function ChatShell() {
         {
           onChunk: (chunk) => {
             if (!hasReplyStartEvent) {
-              appendTimelineEvent(assistantMessageId, {
+              pushTimelineEvent(timelineMessageId, {
                 id: generateClientMessageId("timeline"),
                 phase: "reply_start",
                 text: "开始回复消息",
@@ -587,11 +659,13 @@ export function ChatShell() {
             if (messageId) {
               replaceMessageId(assistantMessageId, messageId);
               finalAssistantMessageId = messageId;
+              timelineMessageId = messageId;
               setPendingAssistantMessageId((prev) =>
                 prev === assistantMessageId ? messageId : prev,
               );
             }
-            appendTimelineEvent(messageId || finalAssistantMessageId, {
+            const targetMessageId = messageId || finalAssistantMessageId;
+            pushTimelineEvent(targetMessageId, {
               id: generateClientMessageId("timeline"),
               phase: "reply_done",
               text: "回复完成",
@@ -612,16 +686,13 @@ export function ChatShell() {
                 : eventType === "tool_start"
                   ? "running"
                   : undefined;
-            appendTimelineEvent(
-              assistantMessageId,
-              {
-                id: generateClientMessageId("timeline"),
-                phase: eventType,
-                text: line,
-                createdAt: nowTimeLabel(),
-                status,
-              },
-            );
+            pushTimelineEvent(timelineMessageId, {
+              id: generateClientMessageId("timeline"),
+              phase: eventType,
+              text: line,
+              createdAt: nowTimeLabel(),
+              status,
+            });
             setHasStreamStarted(true);
             setPendingTime(null);
           },
@@ -649,7 +720,7 @@ export function ChatShell() {
         const streamErrorMessage =
           streamError instanceof Error ? streamError.message : "流式调用失败，已回退普通请求";
         setRequestError(streamErrorMessage);
-        appendTimelineEvent(assistantMessageId, {
+        pushTimelineEvent(timelineMessageId, {
           id: generateClientMessageId("timeline"),
           phase: "progress",
           text: "流式失败，回退普通请求",
@@ -664,6 +735,7 @@ export function ChatShell() {
           });
           replaceMessageId(assistantMessageId, assistantMessage.message.id);
           finalAssistantMessageId = assistantMessage.message.id;
+          timelineMessageId = assistantMessage.message.id;
           setPendingAssistantMessageId(null);
           upsertAssistantMessage(
             assistantMessage.message.id,
@@ -671,7 +743,7 @@ export function ChatShell() {
             assistantMessage.message.createdAt,
             assistantMessage.message.model || activeModelLabel,
           );
-          appendTimelineEvent(assistantMessage.message.id, {
+          pushTimelineEvent(assistantMessage.message.id, {
             id: generateClientMessageId("timeline"),
             phase: "reply_done",
             text: "普通请求回复完成",
@@ -687,11 +759,33 @@ export function ChatShell() {
       }
     } finally {
       streamAbortControllerRef.current = null;
+      if (
+        targetSessionId &&
+        timelineForPersistence.length > 0 &&
+        timelineMessageId &&
+        !shouldRemoveAssistantPlaceholder
+      ) {
+        try {
+          await updateChatMessageTimeline(targetSessionId, timelineMessageId, timelineForPersistence);
+          hasPersistedTimeline = true;
+        } catch (error) {
+          console.warn("Failed to persist timeline events", error);
+        }
+      }
       if (hasStreamChunk) {
         upsertAssistantMessage(finalAssistantMessageId, streamedContent, sentAt, activeModelLabel);
       } else if (shouldRemoveAssistantPlaceholder) {
         removeMessageById(finalAssistantMessageId);
         setPendingAssistantMessageId(null);
+      }
+      if (hasPersistedTimeline) {
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === timelineMessageId && message.role === "assistant"
+              ? { ...message, timelineEvents: timelineForPersistence }
+              : message,
+          ),
+        );
       }
       if (hasStreamChunk) {
         setPendingAssistantMessageId(null);

@@ -1,4 +1,4 @@
-import { Bot, Check, Copy, Shield, Trash2, UserRound } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronUp, Copy, Shield, Trash2, UserRound } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ChatToolEvents } from "@/features/chat/components/chat-tool-events";
 import { MarkdownMessage } from "@/features/chat/components/markdown-message";
@@ -178,8 +178,10 @@ export function ChatMessages({
   onDeleteMessage,
 }: ChatMessagesProps) {
   const containerRef = useRef<HTMLElement | null>(null);
+  const timelineEventCountRef = useRef<Record<string, number>>({});
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [pendingDeleteMessageId, setPendingDeleteMessageId] = useState<string | null>(null);
+  const [expandedTimelineMessageIds, setExpandedTimelineMessageIds] = useState<Record<string, boolean>>({});
 
   const handleCopy = async (message: ChatMessage) => {
     try {
@@ -229,6 +231,41 @@ export function ChatMessages({
     });
   }, [messages]);
 
+  useEffect(() => {
+    setExpandedTimelineMessageIds((prev) => {
+      const next: Record<string, boolean> = {};
+      for (const message of messages) {
+        if (prev[message.id]) {
+          next[message.id] = true;
+        }
+      }
+      for (const message of messages) {
+        if (message.role !== "assistant") {
+          continue;
+        }
+        const timelineEvents = message.timelineEvents ?? [];
+        if (timelineEvents.length === 0) {
+          continue;
+        }
+        const previousCount = timelineEventCountRef.current[message.id] ?? 0;
+        const latestEvent = timelineEvents[timelineEvents.length - 1];
+        const hasNewTimelineEvent = timelineEvents.length > previousCount;
+        const shouldAutoExpand =
+          message.id === pendingAssistantMessageId ||
+          (hasNewTimelineEvent && latestEvent?.phase === "reply_done");
+        if (shouldAutoExpand) {
+          next[message.id] = true;
+        }
+      }
+      return next;
+    });
+    const nextCountMap: Record<string, number> = {};
+    for (const message of messages) {
+      nextCountMap[message.id] = (message.timelineEvents ?? []).length;
+    }
+    timelineEventCountRef.current = nextCountMap;
+  }, [messages, pendingAssistantMessageId]);
+
   const showToolEventsPanel = isToolCallLoading || toolEvents.length > 0 || decisionEvents.length > 0;
   let lastUserMessageIndex = -1;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -267,6 +304,8 @@ export function ChatMessages({
             message.content.trim().length === 0;
           const timelineEvents = message.timelineEvents ?? [];
           const showTimeline = message.role === "assistant" && timelineEvents.length > 0;
+          const isTimelineExpanded = Boolean(expandedTimelineMessageIds[message.id]);
+          const latestTimelineEvent = timelineEvents[timelineEvents.length - 1];
 
           return (
             <div key={message.id}>
@@ -292,46 +331,78 @@ export function ChatMessages({
                   />
                 ) : null}
                 {showTimeline ? (
-                  <details className="overflow-hidden rounded-xl border border-slate-200 bg-white/85" open>
-                    <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-700">
-                      Timeline ({timelineEvents.length})
-                    </summary>
-                    <div className="border-t border-slate-200 px-3 py-2">
-                      <div className="relative">
-                        <div className="pointer-events-none absolute bottom-2 left-[11px] top-2 w-px bg-slate-300" />
-                        <div className="space-y-3">
-                          {timelineEvents.map((event) => (
-                            <div key={event.id} className="grid grid-cols-[24px_1fr] items-start gap-x-2">
-                              <div className="relative flex justify-center pt-[2px]">
-                                <span
-                                  className={`h-3 w-3 rounded-full border-2 bg-white ${timelinePhaseDotClass(
-                                    event.phase,
-                                    event.status,
-                                  )}`}
-                                />
-                              </div>
-                              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-600">
-                                <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-500">
-                                  {formatShanghaiTimeToMinute(event.createdAt)}
-                                </span>
-                              <span
-                                className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${timelinePhaseBadgeClass(
-                                  event.phase,
-                                  event.status,
-                                )}`}
-                              >
-                                {timelinePhaseLabel(event)}
-                              </span>
-                              <span className={timelinePhaseTextClass(event.phase, event.status)}>
-                                {event.text}
-                              </span>
-                            </div>
-                          </div>
-                        ))}
+                  <section className="overflow-hidden rounded-xl border border-slate-200 bg-white/90">
+                    <div className="border-b border-slate-200 px-3 py-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-semibold text-slate-700">Timeline</span>
+                          <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-600">
+                            {timelineEvents.length} 条
+                          </span>
+                          {latestTimelineEvent ? (
+                            <span className="truncate text-slate-500">{latestTimelineEvent.text}</span>
+                          ) : null}
                         </div>
+                        <button
+                          type="button"
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900"
+                          onClick={() =>
+                            setExpandedTimelineMessageIds((prev) => ({
+                              ...prev,
+                              [message.id]: !isTimelineExpanded,
+                            }))
+                          }
+                          aria-label={isTimelineExpanded ? "折叠 timeline" : "展开 timeline"}
+                          title={isTimelineExpanded ? "折叠" : "展开"}
+                        >
+                          {isTimelineExpanded ? (
+                            <ChevronUp className="h-4 w-4" />
+                          ) : (
+                            <ChevronDown className="h-4 w-4" />
+                          )}
+                        </button>
                       </div>
                     </div>
-                  </details>
+                    {isTimelineExpanded ? (
+                      <div className="max-h-72 overflow-y-auto px-3 py-3">
+                        <div className="relative">
+                          <div className="pointer-events-none absolute bottom-2 left-[11px] top-2 w-px bg-slate-200" />
+                          <div className="space-y-3">
+                            {timelineEvents.map((event) => (
+                              <div key={event.id} className="grid grid-cols-[24px_1fr] items-start gap-x-2">
+                                <div className="relative flex justify-center pt-[2px]">
+                                  <span
+                                    className={`h-3 w-3 rounded-full border-2 bg-white ${timelinePhaseDotClass(
+                                      event.phase,
+                                      event.status,
+                                    )}`}
+                                  />
+                                </div>
+                                <div className="rounded-lg border border-slate-100 bg-slate-50/50 px-2.5 py-2">
+                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-600">
+                                    <span className="rounded bg-white px-1.5 py-0.5 font-mono text-[11px] text-slate-500">
+                                      {formatShanghaiTimeToMinute(event.createdAt)}
+                                    </span>
+                                    <span
+                                      className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${timelinePhaseBadgeClass(
+                                        event.phase,
+                                        event.status,
+                                      )}`}
+                                    >
+                                      {timelinePhaseLabel(event)}
+                                    </span>
+                                  </div>
+                                  <p className={`mt-1.5 text-xs leading-5 ${timelinePhaseTextClass(event.phase, event.status)}`}>
+                                    {event.text}
+                                  </p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+                  </section>
                 ) : null}
                 <div className="relative mb-5">
                   <div

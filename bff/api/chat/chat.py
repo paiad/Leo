@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from bff.core.response import err, ok
-from bff.domain.models import ChatRequest, CreateSessionRequest
+from bff.domain.models import ChatRequest, CreateSessionRequest, UpdateMessageTimelineRequest
 from bff.services.container import chat_service
 
 router = APIRouter(prefix='/api/v1/chat', tags=['chat'])
@@ -46,6 +46,22 @@ async def delete_session_message(session_id: str, message_id: str) -> dict:
     if deleted is None:
         raise HTTPException(status_code=404, detail=err('会话不存在'))
     return ok({'deleted': deleted})
+
+
+@router.patch('/sessions/{session_id}/messages/{message_id}/timeline')
+async def patch_message_timeline(
+    session_id: str,
+    message_id: str,
+    payload: UpdateMessageTimelineRequest,
+) -> dict:
+    updated = await chat_service.update_message_timeline(
+        session_id,
+        message_id,
+        payload.timelineEvents,
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail=err('会话或消息不存在'))
+    return ok(updated)
 
 
 @router.delete('/sessions/{session_id}/messages')
