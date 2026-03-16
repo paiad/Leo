@@ -3,22 +3,13 @@
 import { RefreshCcw, ToggleLeft, ToggleRight, Trash2, Wrench } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
-  backfillMcpServerProfiles,
   createMcpServer,
   deleteMcpServer,
-  fetchMcpRoutingDashboard,
-  fetchMcpRoutingEvents,
   fetchMcpServers,
-  purgeLegacyMcpRoutingEvents,
   updateMcpServer,
   type CreateMcpServerInput,
 } from "@/features/chat/services/chat-api";
-import type {
-  ChatMcpServer,
-  ChatRoutingDashboard,
-  ChatRoutingEvent,
-  ChatToolTransportType,
-} from "@/features/chat/types/chat";
+import type { ChatMcpServer, ChatToolTransportType } from "@/features/chat/types/chat";
 import { WorkspacePageHeader } from "@/shared/components/layout/workspace-page-header";
 
 const DEFAULT_IMPORT_JSON = `{
@@ -50,7 +41,6 @@ type RawMcpServerConfig = {
   url?: string;
   description?: string;
   category?: unknown;
-  capabilityProfile?: unknown;
   enabled?: boolean;
 };
 
@@ -88,30 +78,6 @@ function normalizeStringMap(value: unknown): Record<string, string> | undefined 
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
-function normalizeCapabilityProfile(value: unknown): Record<string, unknown> | undefined {
-  if (!value) {
-    return undefined;
-  }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-      try {
-        const parsed = JSON.parse(trimmed) as unknown;
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          return parsed as Record<string, unknown>;
-        }
-      } catch {
-        return undefined;
-      }
-    }
-    return undefined;
-  }
-  if (typeof value === "object" && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return undefined;
-}
-
 function normalizeServerConfig(
   fallbackServerId: string,
   raw: RawMcpServerConfig,
@@ -130,7 +96,6 @@ function normalizeServerConfig(
   const parsedHeaders = normalizeStringMap(raw.headers);
   const env = parsedEnv || parsedHeaders ? { ...(parsedHeaders ?? {}), ...(parsedEnv ?? {}) } : undefined;
   const category = typeof raw.category === "string" && raw.category.trim() ? raw.category.trim() : undefined;
-  const capabilityProfile = normalizeCapabilityProfile(raw.capabilityProfile);
 
   return {
     serverId,
@@ -145,7 +110,6 @@ function normalizeServerConfig(
         ? raw.description.trim()
         : "",
     category,
-    capabilityProfile,
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : true,
   };
 }
@@ -175,21 +139,12 @@ function parseImportPayload(raw: string): CreateMcpServerInput[] {
 
 export function McpManager() {
   const [servers, setServers] = useState<ChatMcpServer[]>([]);
-  const [routingDashboard, setRoutingDashboard] = useState<ChatRoutingDashboard | null>(null);
-  const [routingEvents, setRoutingEvents] = useState<ChatRoutingEvent[]>([]);
-  const [routingError, setRoutingError] = useState<string | null>(null);
-  const [routingNotice, setRoutingNotice] = useState<string | null>(null);
   const [importJson, setImportJson] = useState(DEFAULT_IMPORT_JSON);
   const [importError, setImportError] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
-  const [profileNotice, setProfileNotice] = useState<string | null>(null);
-  const [profileError, setProfileError] = useState<string | null>(null);
-  const [isBackfillingProfiles, setIsBackfillingProfiles] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [isRoutingLoading, setIsRoutingLoading] = useState(false);
-  const [isPurgingLegacyRouting, setIsPurgingLegacyRouting] = useState(false);
   const [deletingServerId, setDeletingServerId] = useState<string | null>(null);
   const [togglingServerId, setTogglingServerId] = useState<string | null>(null);
   const importTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -199,69 +154,21 @@ export function McpManager() {
     setServers(data);
   };
 
-  const loadRoutingObservability = async () => {
-    setIsRoutingLoading(true);
-    setRoutingError(null);
-    try {
-      const [dashboard, events] = await Promise.all([
-        fetchMcpRoutingDashboard(7),
-        fetchMcpRoutingEvents(1, 20),
-      ]);
-      setRoutingDashboard(dashboard);
-      setRoutingEvents(events);
-    } catch (error) {
-      setRoutingError(error instanceof Error ? error.message : "加载路由看板失败");
-    } finally {
-      setIsRoutingLoading(false);
-    }
-  };
-
-  const handlePurgeLegacyRoutingEvents = async () => {
-    if (isPurgingLegacyRouting) {
-      return;
-    }
-    const confirmed = window.confirm(
-      "将永久删除所有 legacy 路由事件（session_id 为空的历史数据）。此操作不可恢复，确认继续？",
-    );
-    if (!confirmed) {
-      return;
-    }
-    setRoutingError(null);
-    setRoutingNotice(null);
-    setIsPurgingLegacyRouting(true);
-    try {
-      const deletedCount = await purgeLegacyMcpRoutingEvents();
-      setRoutingNotice(`已清空 legacy 路由事件：${deletedCount} 条`);
-      await loadRoutingObservability();
-    } catch (error) {
-      setRoutingError(error instanceof Error ? error.message : "清空 legacy 路由事件失败");
-    } finally {
-      setIsPurgingLegacyRouting(false);
-    }
-  };
-
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
-        const [data, dashboard, events] = await Promise.all([
-          fetchMcpServers(),
-          fetchMcpRoutingDashboard(7),
-          fetchMcpRoutingEvents(1, 20),
-        ]);
+        const data = await fetchMcpServers();
         if (cancelled) {
           return;
         }
         setServers(data);
-        setRoutingDashboard(dashboard);
-        setRoutingEvents(events);
       } catch (error) {
         if (cancelled) {
           return;
         }
         const message = error instanceof Error ? error.message : "加载 MCP 页面数据失败";
         setListError(message);
-        setRoutingError(message);
       }
     };
     void load();
@@ -282,43 +189,14 @@ export function McpManager() {
 
   const handleRefresh = async () => {
     setListError(null);
-    setRoutingError(null);
-    setRoutingNotice(null);
-    setProfileError(null);
-    setProfileNotice(null);
     setIsRefreshing(true);
     try {
-      await Promise.all([loadServers(), loadRoutingObservability()]);
+      await loadServers();
     } catch (error) {
       const message = error instanceof Error ? error.message : "刷新 MCP 数据失败";
       setListError(message);
-      setRoutingError(message);
     } finally {
       setIsRefreshing(false);
-    }
-  };
-
-  const handleBackfillProfiles = async () => {
-    if (isBackfillingProfiles) {
-      return;
-    }
-    setProfileError(null);
-    setProfileNotice(null);
-
-    const confirmed = window.confirm("将为缺失 capabilityProfile 的 MCP Server 生成 Profile（会调用 LLM）。确认继续？");
-    if (!confirmed) {
-      return;
-    }
-
-    setIsBackfillingProfiles(true);
-    try {
-      const updated = await backfillMcpServerProfiles({ limit: 50, force: false });
-      await loadServers();
-      setProfileNotice(`Profile 补齐完成：本次更新 ${updated.length} 个 Server`);
-    } catch (error) {
-      setProfileError(error instanceof Error ? error.message : "补齐 MCP Profile 失败");
-    } finally {
-      setIsBackfillingProfiles(false);
     }
   };
 
@@ -398,12 +276,6 @@ export function McpManager() {
     return null;
   };
 
-  const formatPercent = (value: number | null | undefined): string =>
-    value == null ? "-" : `${value.toFixed(1)}%`;
-
-  const formatLatency = (value: number | null | undefined): string =>
-    value == null ? "-" : `${Math.round(value)} ms`;
-
   return (
     <div className="mx-auto w-full max-w-6xl">
       <div className="apple-surface overflow-hidden">
@@ -455,15 +327,6 @@ export function McpManager() {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => void handleBackfillProfiles()}
-              disabled={isBackfillingProfiles || isRefreshing}
-              className="rounded-lg border border-slate-200/90 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 disabled:opacity-60"
-              title="为缺失 capabilityProfile 的 MCP Server 生成 Profile（调用 LLM）"
-            >
-              {isBackfillingProfiles ? "补齐中..." : "补齐 Profile"}
-            </button>
-            <button
-              type="button"
               onClick={() => void handleRefresh()}
               disabled={isRefreshing}
               className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200/90 text-slate-700 disabled:opacity-60"
@@ -475,8 +338,6 @@ export function McpManager() {
           </div>
         </div>
         {listError ? <p className="mt-2 text-xs text-red-600">{listError}</p> : null}
-        {profileError ? <p className="mt-2 text-xs text-red-600">{profileError}</p> : null}
-        {profileNotice ? <p className="mt-2 text-xs text-emerald-700">{profileNotice}</p> : null}
         <ul className="mt-3 space-y-3">
           {servers.map((server) => (
             <li key={server.serverId} className="rounded-2xl border border-slate-200/80 bg-slate-50/60 p-3.5">
@@ -497,17 +358,6 @@ export function McpManager() {
                     </span>
                     <span className="ml-2 rounded bg-slate-200 px-2 py-0.5 text-slate-700">
                       category: {(server.category ?? "domain") as string}
-                    </span>
-                    <span
-                      className={`ml-2 rounded px-2 py-0.5 ${
-                        server.capabilityProfile && Object.keys(server.capabilityProfile).length > 0
-                          ? "bg-indigo-100 text-indigo-700"
-                          : "bg-amber-100 text-amber-700"
-                      }`}
-                    >
-                      {server.capabilityProfile && Object.keys(server.capabilityProfile).length > 0
-                        ? "profile 已生成"
-                        : "profile 缺失"}
                     </span>
                   </p>
                   <p className="mt-1 text-xs text-slate-600">
@@ -533,33 +383,6 @@ export function McpManager() {
                   {!server.description && getPurposeText(server) ? (
                     <p className="mt-2 text-xs text-slate-600">作用：{getPurposeText(server)}</p>
                   ) : null}
-
-                  <details className="mt-3 rounded-xl border border-slate-200/80 bg-white">
-                    <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-slate-700">
-                      Profile（点击展开）
-                    </summary>
-                    <div className="border-t border-slate-200/80 px-3 py-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-[11px] text-slate-500">
-                          capabilityProfile（用于 general intent 的元数据匹配）
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const pretty = JSON.stringify(server.capabilityProfile ?? {}, null, 2);
-                            void navigator.clipboard?.writeText(pretty);
-                            setProfileNotice(`已复制 ${server.serverId} 的 Profile`);
-                          }}
-                          className="rounded-lg border border-slate-200/80 bg-white px-2 py-1 text-[11px] font-medium text-slate-700"
-                        >
-                          复制 JSON
-                        </button>
-                      </div>
-                      <pre className="mt-2 max-h-72 overflow-auto rounded-lg bg-slate-50 p-2 text-[11px] text-slate-700">
-                        {JSON.stringify(server.capabilityProfile ?? {}, null, 2)}
-                      </pre>
-                    </div>
-                  </details>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <button
@@ -604,88 +427,6 @@ export function McpManager() {
         </ul>
       </section>
 
-      <section className="rounded-2xl border border-slate-200/80 bg-white p-5">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold tracking-wide text-slate-800">路由看板（最近 7 天）</h2>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void handlePurgeLegacyRoutingEvents()}
-              disabled={isPurgingLegacyRouting || isRoutingLoading}
-              className="rounded-lg border border-slate-200/80 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 disabled:opacity-60"
-              title="永久删除 session_id 为空的历史路由事件"
-            >
-              {isPurgingLegacyRouting ? "清空中..." : "清空 legacy"}
-            </button>
-            {isRoutingLoading ? <span className="text-xs text-slate-500">加载中...</span> : null}
-          </div>
-        </div>
-        {routingError ? <p className="mb-3 text-xs text-red-600">{routingError}</p> : null}
-        {routingNotice ? <p className="mb-3 text-xs text-emerald-700">{routingNotice}</p> : null}
-        {routingDashboard ? (
-          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-            <div className="rounded-xl border border-slate-200/80 bg-slate-50 p-3">
-              <p className="text-[11px] text-slate-500">路由准确率</p>
-              <p className="mt-1 text-base font-semibold text-slate-900">
-                {formatPercent(routingDashboard.metrics.routingAccuracy)}
-              </p>
-            </div>
-            <div className="rounded-xl border border-slate-200/80 bg-slate-50 p-3">
-              <p className="text-[11px] text-slate-500">工具成功率</p>
-              <p className="mt-1 text-base font-semibold text-slate-900">
-                {formatPercent(routingDashboard.metrics.toolSuccessRate)}
-              </p>
-            </div>
-            <div className="rounded-xl border border-slate-200/80 bg-slate-50 p-3">
-              <p className="text-[11px] text-slate-500">平均耗时</p>
-              <p className="mt-1 text-base font-semibold text-slate-900">
-                {formatLatency(routingDashboard.metrics.avgLatencyMs)}
-              </p>
-            </div>
-            <div className="rounded-xl border border-slate-200/80 bg-slate-50 p-3">
-              <p className="text-[11px] text-slate-500">Fallback 触发率</p>
-              <p className="mt-1 text-base font-semibold text-slate-900">
-                {formatPercent(routingDashboard.metrics.fallbackTriggerRate)}
-              </p>
-            </div>
-          </div>
-        ) : (
-          <p className="text-xs text-slate-500">暂无路由指标数据。</p>
-        )}
-
-        <div className="mt-4">
-          <h3 className="text-xs font-semibold tracking-wide text-slate-700">最近 20 条路由事件</h3>
-          <ul className="mt-2 space-y-2">
-            {routingEvents.map((event, index) => (
-              <li
-                key={`${event.id ?? "event"}-${index}`}
-                className="rounded-xl border border-slate-200/80 bg-slate-50/80 px-3 py-2 text-xs text-slate-700"
-              >
-                {event.request_preview ? (
-                  <p className="mb-1 text-[12px] text-slate-900">请求：{event.request_preview}</p>
-                ) : null}
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded bg-slate-200 px-2 py-0.5 font-medium text-slate-700">
-                    {event.event_type}
-                  </span>
-                  <span>intent: {event.intent ?? "-"}</span>
-                  <span>selected: {event.selected_server_id ?? "-"}</span>
-                  <span>success: {typeof event.success === "boolean" ? String(event.success) : "-"}</span>
-                  <span>latency: {formatLatency(event.latency_ms)}</span>
-                </div>
-                {event.createdAt ? (
-                  <p className="mt-1 text-[11px] text-slate-500">{event.createdAt}</p>
-                ) : null}
-              </li>
-            ))}
-            {routingEvents.length === 0 ? (
-              <li className="rounded-xl border border-dashed border-slate-300 px-3 py-2 text-xs text-slate-500">
-                暂无路由事件。
-              </li>
-            ) : null}
-          </ul>
-        </div>
-      </section>
         </div>
       </div>
     </div>
