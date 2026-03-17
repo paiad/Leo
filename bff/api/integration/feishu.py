@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from typing import Any
 
 import httpx
@@ -111,6 +112,46 @@ def _sanitize_user_text(text: str, *, is_audio_asr: bool) -> str:
     if len(value) <= max_chars:
         return value
     return value[:max_chars].rstrip()
+
+
+def _compact_for_log(text: str, *, max_chars: int = 240) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    compact = re.sub(r"\s+", " ", value).strip()
+    if len(compact) <= max_chars:
+        return compact
+    return compact[:max_chars].rstrip() + "... [truncated]"
+
+
+async def _get_last_assistant_text(session_id: str) -> str:
+    messages = chat_service.get_session_messages(session_id) or []
+    for message in reversed(messages):
+        if str(message.get("role") or "") != "assistant":
+            continue
+        text = str(message.get("content") or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _log_feishu_turn_summary(summary: dict[str, Any]) -> None:
+    lines = [
+        "FEISHU TURN SUMMARY",
+        f"status={summary.get('status')}",
+        f"chat_id={summary.get('chat_id')}, message_id={summary.get('message_id')}, "
+        f"chat_type={summary.get('chat_type')}, msg_type={summary.get('msg_type')}",
+        f"session_id={summary.get('session_id') or '(none)'}",
+        f"send_step_progress={summary.get('send_step_progress')}, mode={summary.get('mode') or '(n/a)'}, "
+        f"max_progress={summary.get('max_progress')}, thinking_max_chars={summary.get('thinking_max_chars')}",
+        f"timing_ms: total={summary.get('total_ms')}, model={summary.get('model_ms')}, stream={summary.get('stream_ms')}",
+        f"user_text_len={summary.get('user_text_len')}, user_text={summary.get('user_text_preview') or '(empty)'}",
+        f"assistant_text_len={summary.get('assistant_text_len')}, assistant_text={summary.get('assistant_text_preview') or '(empty)'}",
+    ]
+    error = str(summary.get("error") or "").strip()
+    if error:
+        lines.append(f"error={error}")
+    logger.info("\n".join(lines))
 
 
 class _SessionMap(SessionMap):
@@ -278,64 +319,96 @@ async def _handle_receive_event(event: dict[str, Any]) -> None:
     message_id = str(message.get("message_id") or "").strip()
     chat_type = str(message.get("chat_type") or "").strip()
     msg_type = str(message.get("message_type") or "").strip()
+    turn_started = time.perf_counter()
+    summary: dict[str, Any] = {
+        "status": "init",
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "chat_type": chat_type,
+        "msg_type": msg_type,
+        "session_id": "",
+        "send_step_progress": None,
+        "mode": "",
+        "max_progress": None,
+        "thinking_max_chars": None,
+        "model_ms": 0,
+        "stream_ms": 0,
+        "total_ms": 0,
+        "user_text_len": 0,
+        "user_text_preview": "",
+        "assistant_text_len": 0,
+        "assistant_text_preview": "",
+        "error": "",
+    }
     logger.info(
         "Feishu incoming event received: "
         f"chat_id={chat_id}, chat_type={chat_type}, message_id={message_id}, msg_type={msg_type}"
     )
-    if not chat_id:
-        logger.warning("Skip Feishu event: missing chat_id")
-        return
-
-    if not _should_reply(event, message):
-        return
-
     try:
-        user_text = await _resolve_user_input_text(message)
-        user_text = _sanitize_user_text(user_text, is_audio_asr=(msg_type == "audio"))
-    except Exception:
-        logger.exception(
-            "Failed to resolve Feishu message content: "
-            f"chat_id={chat_id}, message_id={message_id}, msg_type={msg_type}"
-        )
+        if not chat_id:
+            summary["status"] = "skipped_missing_chat_id"
+            logger.warning("Skip Feishu event: missing chat_id")
+            return
+
+        if not _should_reply(event, message):
+            summary["status"] = "skipped_policy"
+            return
+
         try:
+            user_text = await _resolve_user_input_text(message)
+            user_text = _sanitize_user_text(user_text, is_audio_asr=(msg_type == "audio"))
+        except Exception as exc:
+            summary["status"] = "error_resolve_user_text"
+            summary["error"] = str(exc)
+            logger.exception(
+                "Failed to resolve Feishu message content: "
+                f"chat_id={chat_id}, message_id={message_id}, msg_type={msg_type}"
+            )
+            try:
+                if msg_type == "audio":
+                    await _send_text_message(chat_id, "语音识别失败，请重试或改发文字。")
+                else:
+                    await _send_text_message(chat_id, "处理消息时发生错误，请稍后重试。")
+            except Exception:
+                logger.exception(
+                    "Failed to send Feishu content-resolve fallback message: "
+                    f"chat_id={chat_id}, message_id={message_id}"
+                )
+            return
+
+        summary["user_text_len"] = len(user_text)
+        summary["user_text_preview"] = _compact_for_log(user_text)
+        if not user_text:
+            msg_type = str(message.get("message_type") or "")
+            summary["status"] = "skipped_empty_user_text"
+            logger.info(
+                "Feishu message has no extractable text content: "
+                f"chat_id={chat_id}, message_id={message_id}, msg_type={msg_type}"
+            )
             if msg_type == "audio":
                 await _send_text_message(chat_id, "语音识别失败，请重试或改发文字。")
-            else:
-                await _send_text_message(chat_id, "处理消息时发生错误，请稍后重试。")
-        except Exception:
-            logger.exception(
-                "Failed to send Feishu content-resolve fallback message: "
-                f"chat_id={chat_id}, message_id={message_id}"
-            )
-        return
+            elif msg_type and msg_type != "text":
+                await _send_text_message(chat_id, "目前仅支持文本和语音消息。")
+            return
 
-    if not user_text:
-        msg_type = str(message.get("message_type") or "")
-        logger.info(
-            "Feishu message has no extractable text content: "
-            f"chat_id={chat_id}, message_id={message_id}, msg_type={msg_type}"
-        )
         if msg_type == "audio":
-            await _send_text_message(chat_id, "语音识别失败，请重试或改发文字。")
-        elif msg_type and msg_type != "text":
-            await _send_text_message(chat_id, "目前仅支持文本和语音消息。")
-        return
+            preview = user_text if len(user_text) <= 300 else f"{user_text[:300]}...(truncated)"
+            logger.info(
+                "Feishu audio ASR transcript: "
+                f"chat_id={chat_id}, message_id={message_id}, text={preview}"
+            )
 
-    if msg_type == "audio":
-        preview = user_text if len(user_text) <= 300 else f"{user_text[:300]}...(truncated)"
+        session_id = await _session_map.get_or_create(chat_id)
+        summary["session_id"] = session_id
         logger.info(
-            "Feishu audio ASR transcript: "
-            f"chat_id={chat_id}, message_id={message_id}, text={preview}"
+            "Feishu message accepted for model processing: "
+            f"chat_id={chat_id}, message_id={message_id}, session_id={session_id}, text_len={len(user_text)}"
         )
 
-    session_id = await _session_map.get_or_create(chat_id)
-    logger.info(
-        "Feishu message accepted for model processing: "
-        f"chat_id={chat_id}, message_id={message_id}, session_id={session_id}, text_len={len(user_text)}"
-    )
-    try:
         send_step_progress = _env_bool("FEISHU_SEND_STEP_PROGRESS", False)
+        summary["send_step_progress"] = send_step_progress
         if not send_step_progress:
+            model_started = time.perf_counter()
             result = await chat_service.send_message(
                 ChatRequest(
                     content=user_text,
@@ -344,24 +417,32 @@ async def _handle_receive_event(event: dict[str, Any]) -> None:
                     userInputType="audio_asr" if msg_type == "audio" else "text",
                 )
             )
+            summary["model_ms"] = int((time.perf_counter() - model_started) * 1000)
             assistant_text = str((result.get("data") or {}).get("content") or "").strip()
             if not assistant_text:
                 assistant_text = "收到消息，但模型返回了空内容。"
+            summary["assistant_text_len"] = len(assistant_text)
+            summary["assistant_text_preview"] = _compact_for_log(assistant_text)
+            summary["status"] = "ok_sync"
             await _send_text_message(chat_id, assistant_text)
             return
 
         mode = _progress_mode()
+        summary["mode"] = mode
         try:
             max_progress = int(str(get_env("FEISHU_MAX_STEP_PROGRESS", "60") or "60"))
         except ValueError:
             max_progress = 60
+        summary["max_progress"] = max_progress
         try:
             thinking_max_chars = int(
                 str(get_env("FEISHU_THOUGHTS_MAX_CHARS", "220") or "220")
             )
         except ValueError:
             thinking_max_chars = 220
+        summary["thinking_max_chars"] = thinking_max_chars
 
+        stream_started = time.perf_counter()
         handled = await stream_with_progress_reply(
             raw_events=chat_service.stream_message(
                 ChatRequest(
@@ -383,9 +464,17 @@ async def _handle_receive_event(event: dict[str, Any]) -> None:
             fallback_error_message="处理消息时发生错误，请稍后重试。",
             fallback_empty_message="收到消息，但模型返回了空内容。",
         )
+        summary["stream_ms"] = int((time.perf_counter() - stream_started) * 1000)
         if not handled:
+            summary["status"] = "error_stream"
             return
+        assistant_text = await _get_last_assistant_text(session_id)
+        summary["assistant_text_len"] = len(assistant_text)
+        summary["assistant_text_preview"] = _compact_for_log(assistant_text)
+        summary["status"] = "ok_stream"
     except asyncio.CancelledError:
+        summary["status"] = "cancelled"
+        summary["error"] = "cancelled"
         logger.warning(
             "Feishu message handling cancelled: "
             f"chat_id={chat_id}, message_id={message_id}"
@@ -399,7 +488,9 @@ async def _handle_receive_event(event: dict[str, Any]) -> None:
                 f"chat_id={chat_id}, message_id={message_id}"
             )
         return
-    except Exception:
+    except Exception as exc:
+        summary["status"] = "error_runtime"
+        summary["error"] = str(exc)
         logger.exception("Failed to handle Feishu incoming message")
         try:
             await _send_text_message(chat_id, "处理消息时发生错误，请稍后重试。")
@@ -408,6 +499,9 @@ async def _handle_receive_event(event: dict[str, Any]) -> None:
                 "Failed to send Feishu fallback error message: "
                 f"chat_id={chat_id}, message_id={message_id}"
             )
+    finally:
+        summary["total_ms"] = int((time.perf_counter() - turn_started) * 1000)
+        _log_feishu_turn_summary(summary)
 
 
 async def is_duplicate_message(message_id: str) -> bool:

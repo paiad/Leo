@@ -49,12 +49,12 @@ def normalize_progress_mode(mode: str) -> str:
 
 
 def format_thinking_progress_message(payload: dict[str, Any], *, max_chars: int) -> str:
+    _ = max_chars
     message = str(payload.get("message") or "").strip()
     if not message:
         return ""
+    # Backward compatibility: historical senders may still include this marker.
     if "[truncated]" in message:
-        return ""
-    if max_chars > 0 and len(message) > max_chars:
         return ""
     return message
 
@@ -110,7 +110,7 @@ async def stream_with_progress_reply(
     last_sent_text: str | None = None
     progress_count = 0
     has_started_reply = False
-    pending_thinking_text: str | None = None
+    last_thinking_text: str | None = None
 
     async for raw_event in raw_events:
         parsed = parse_sse_message(raw_event)
@@ -138,15 +138,8 @@ async def stream_with_progress_reply(
             if mode in {"thoughts", "both"} and progress_count < max_progress:
                 text = format_thinking_progress_message(payload, max_chars=thinking_max_chars)
                 if text and text != last_progress_text:
-                    # Emit the previous thinking now; keep the latest one as pending.
-                    # This lets us semantically filter only the final thinking message
-                    # against the final assistant summary.
-                    if pending_thinking_text:
-                        last_sent_text = await send_text_dedup(
-                            pending_thinking_text,
-                            last_sent_text,
-                        )
-                    pending_thinking_text = text
+                    last_sent_text = await send_text_dedup(text, last_sent_text)
+                    last_thinking_text = text
                     last_progress_text = text
                     progress_count += 1
             continue
@@ -162,10 +155,7 @@ async def stream_with_progress_reply(
             break
 
     assistant_text = "".join(chunks).strip() or fallback_empty_message
-    if pending_thinking_text and not is_semantically_similar(
-        pending_thinking_text,
-        assistant_text,
-    ):
-        last_sent_text = await send_text_dedup(pending_thinking_text, last_sent_text)
+    if last_thinking_text and is_semantically_similar(last_thinking_text, assistant_text):
+        return True
     await send_text_dedup(assistant_text, last_sent_text)
     return True

@@ -61,17 +61,12 @@ class ToolCallAgent(ReActAgent):
         return max(minimum, value)
 
     def _format_thought_for_progress(self, content: str) -> str:
-        max_chars = self._env_int("OPENMANUS_STREAM_THOUGHTS_MAX_CHARS", 320, minimum=80)
         text = str(content or "").strip()
         if not text:
             return ""
-        # Keep progress line compact to avoid flooding the UI.
-        text = re.sub(r"\s+", " ", text).strip()
-        if text.endswith(("：", ":")):
-            text = text[:-1] + "。"
-        if len(text) <= max_chars:
-            return text
-        return f"{text[:max_chars]}... [truncated]"
+        # Preserve original paragraph/list formatting for downstream channels
+        # (e.g. Feishu) so users can read structured interim output directly.
+        return text
 
     @staticmethod
     def _truncate_for_log(value: str, max_len: int = 150) -> str:
@@ -79,6 +74,17 @@ class ToolCallAgent(ReActAgent):
         if len(text) <= max_len:
             return text
         return f"{text[:max_len]}... [truncated]"
+
+    @staticmethod
+    def _compact_truncate_for_log(value: str, max_words: int = 100) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        compact = re.sub(r"\s+", " ", text).strip()
+        words = compact.split()
+        if len(words) <= max_words:
+            return compact
+        return " ".join(words[:max_words]) + " ... [truncated]"
 
     async def think(self) -> bool:
         """Process current state and decide next actions using tools"""
@@ -122,7 +128,10 @@ class ToolCallAgent(ReActAgent):
         content = response.content if response and response.content else ""
 
         # Log response info
-        logger.info(f"✨ {self.name}'s thoughts: {content}")
+        logger.info(
+            f"✨ {self.name}'s thoughts: "
+            f"{self._compact_truncate_for_log(content, max_words=100)}"
+        )
         logger.info(
             f"🛠️ {self.name} selected {len(tool_calls) if tool_calls else 0} tools to use"
         )
