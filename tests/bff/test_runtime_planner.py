@@ -1,4 +1,6 @@
 import pytest
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from bff.services.runtime.mcp_routing.runtime_plan_models import PlannerFallback, RetrievalResult
 from bff.services.runtime.mcp_routing.runtime_planner import RuntimeMcpPlanner
@@ -14,6 +16,16 @@ class _FakeLLM:
         if not self._responses:
             raise RuntimeError("no more fake responses")
         return self._responses.pop(0)
+
+
+class _CaptureLLM:
+    def __init__(self, response: str):
+        self.response = response
+        self.calls: list[dict] = []
+
+    async def ask(self, **kwargs):  # noqa: ANN003
+        self.calls.append(kwargs)
+        return self.response
 
 
 def _retrieval() -> RetrievalResult:
@@ -56,3 +68,24 @@ def test_extract_json_from_mixed_text_with_multiple_braces():
     assert parsed is not None
     assert parsed["version"] == "mcp-plan.v1"
     assert parsed["need_mcp"] is False
+
+
+@pytest.mark.asyncio
+async def test_planner_prompt_includes_shanghai_today_context():
+    response = (
+        '{"version":"mcp-plan.v1","need_mcp":false,"plan_steps":[],'
+        '"fallback":{"mode":"no_mcp","server_id":null,"tool_name":null,"reason":"x"}}'
+    )
+    llm = _CaptureLLM(response=response)
+    planner = RuntimeMcpPlanner(llm=llm)
+
+    result = await planner.create_plan("[Current User Request]\n今日 AI 新闻", _retrieval())
+
+    assert result.parsed_json is not None
+    assert len(llm.calls) == 1
+    message_text = llm.calls[0]["messages"][0]["content"]
+    payload = RuntimeMcpPlanner._extract_json(message_text)
+    assert payload is not None
+    expected_today = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    assert payload["time_context"]["timezone"] == "Asia/Shanghai"
+    assert payload["time_context"]["today"] == expected_today

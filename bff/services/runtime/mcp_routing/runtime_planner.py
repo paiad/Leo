@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.llm import LLM
 from app.logger import logger
@@ -28,7 +31,11 @@ class RuntimeMcpPlanner:
 
     async def create_plan(self, prompt: str, retrieval: RetrievalResult) -> PlannerRawResult:
         user_request = RuntimePolicy.extract_current_user_request(prompt).strip()
-        planner_prompt = self._build_planner_prompt(user_request, retrieval)
+        planner_prompt = self._build_planner_prompt(
+            user_request,
+            retrieval,
+            time_context=self._build_time_context(),
+        )
 
         try:
             response = await self._llm.ask(
@@ -85,8 +92,21 @@ class RuntimeMcpPlanner:
             return None
 
     @staticmethod
-    def _build_planner_prompt(user_request: str, retrieval: RetrievalResult) -> str:
-        return build_mcp_planner_prompt(user_request, retrieval)
+    def _build_planner_prompt(
+        user_request: str, retrieval: RetrievalResult, *, time_context: dict[str, str]
+    ) -> str:
+        return build_mcp_planner_prompt(user_request, retrieval, time_context=time_context)
+
+    @staticmethod
+    def _build_time_context() -> dict[str, str]:
+        timezone_name = (os.getenv("BFF_RUNTIME_PLANNER_TZ", "Asia/Shanghai") or "Asia/Shanghai").strip()
+        try:
+            timezone = ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError:
+            timezone_name = "Asia/Shanghai"
+            timezone = ZoneInfo(timezone_name)
+        today = datetime.now(timezone).date().isoformat()
+        return {"timezone": timezone_name, "today": today}
 
     @staticmethod
     def _extract_json(raw_text: str) -> dict[str, Any] | None:

@@ -40,7 +40,9 @@ MCP_PLANNER_REPAIR_SYSTEM_PROMPT = (
 )
 
 
-def build_mcp_planner_prompt(user_request: str, retrieval: Any) -> str:
+def build_mcp_planner_prompt(
+    user_request: str, retrieval: Any, *, time_context: dict[str, str] | None = None
+) -> str:
     candidate_servers = list(getattr(retrieval, "candidate_servers", []) or [])[:8]
     candidate_tools_raw = dict(getattr(retrieval, "candidate_tools", {}) or {})
     candidate_tools = {
@@ -63,6 +65,7 @@ def build_mcp_planner_prompt(user_request: str, retrieval: Any) -> str:
     payload = {
         "version": "mcp-plan.v1",
         "request": user_request,
+        "time_context": time_context or {},
         "retrieval": {
             "intent": str(getattr(retrieval, "intent", "") or ""),
             "candidate_servers": candidate_servers,
@@ -101,6 +104,7 @@ def build_mcp_planner_prompt(user_request: str, retrieval: Any) -> str:
             "If need_mcp=false then plan_steps must be []",
             "fallback must always be an object",
             "Prefer the shortest valid plan",
+            "If time_context.today is provided, resolve relative time words against it and use absolute dates in args_hint",
         ],
     }
     return json.dumps(payload, ensure_ascii=False)
