@@ -24,7 +24,7 @@ const CHAT_ACTIVE_SOURCE_STORAGE_KEY = "leo.chat.activeSource";
 const SUCCESS_NOTICE_AUTO_DISMISS_MS = 3000;
 const ERROR_NOTICE_AUTO_DISMISS_MS = 5000;
 const DEFAULT_PLATFORM_SYSTEM_PROMPT =
-  "你是 Leo，AI Agent 工作台助手。你的目标是帮助用户在同一平台内完成聊天、工具调用、知识检索、Agent 协作与工作流执行。";
+  "你是 OpenLeo，AI Agent 工作台助手。你的目标是帮助用户在同一平台内完成聊天、工具调用、知识检索、Agent 协作与工作流执行。";
 type ChatSource = "browser" | "lark";
 
 type StreamProgressDisplayPayload = {

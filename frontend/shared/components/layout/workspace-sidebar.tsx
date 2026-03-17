@@ -16,7 +16,7 @@ export function WorkspaceSidebar() {
       <div className="flex h-14 items-center justify-center">
         <img
           src="/Leo.png"
-          alt="Claude"
+          alt="OpenLeo"
           className="h-8 w-8 shrink-0"
         />
       </div>

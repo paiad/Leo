@@ -1,16 +1,16 @@
-# Leo
+# OpenLeo
 
-Leo 是一个基于 **OpenManus** 演进的工程化版本，目标是在保留 OpenManus 智能体能力的基础上，补齐可接入前端、可运维、可扩展的后端运行层。
+OpenLeo 是一个基于 **OpenManus** 演进的工程化版本，目标是在保留 OpenManus 智能体能力的基础上，补齐可接入前端、可运维、可扩展的后端运行层。
 
 ## 项目定位
 
 - 基础能力来源：`app/` 下 OpenManus Agent、工具调用、MCP 集成能力
-- 工程化增强：`bff/` 下 Leo BFF（Backend For Frontend）服务层
+- 工程化增强：`bff/` 下 OpenLeo BFF（Backend For Frontend）服务层
 - 目标场景：为前端应用、飞书接入、MCP 工具编排提供稳定 API 与运行时管理
 
 ## 与 OpenManus 的关系
 
-Leo 不是对 OpenManus 的替代，而是面向业务接入的增强层：
+OpenLeo 不是对 OpenManus 的替代，而是面向业务接入的增强层：
 
 1. 继承 OpenManus 的智能体内核能力  
 2. 新增 BFF 分层架构与统一 API  
@@ -23,7 +23,7 @@ Leo 不是对 OpenManus 的替代，而是面向业务接入的增强层：
 ```text
 .
 ├─app/                # OpenManus 核心能力（Agent / Tool / Sandbox / Prompt）
-├─bff/                # Leo 后端适配层（API / Service / Repository / Domain）
+├─bff/                # OpenLeo 后端适配层（API / Service / Repository / Domain）
 ├─frontend/           # 前端项目
 ├─config/             # 配置模板与运行配置
 ├─tests/              # 自动化测试
@@ -32,7 +32,7 @@ Leo 不是对 OpenManus 的替代，而是面向业务接入的增强层：
 
 ## 项目架构
 
-Leo 采用分层架构，职责边界如下：
+OpenLeo 采用分层架构，职责边界如下：
 
 1. 接入层（API Layer）  
 `bff/api/` 负责 HTTP 路由、请求参数校验、SSE 输出、第三方回调入口（如飞书）。
@@ -350,7 +350,7 @@ uv run python run_mcp.py
 uv run python run_flow.py
 ```
 
-- Leo BFF（推荐用于前端联调）：
+- OpenLeo BFF（推荐用于前端联调）：
 ```bash
 python -m uvicorn bff.main:app --host 0.0.0.0 --port 8000
 ```
@@ -436,7 +436,7 @@ python run_rag_mcp_server.py --transport stdio
 
 更多说明见：[`docs/rag-mcp-quickstart.md`](docs/rag-mcp-quickstart.md)
 
-## Leo BFF 能力概览
+## OpenLeo BFF 能力概览
 
 - 统一 Chat API（含流式 SSE）
 - MCP Server 管理与工具发现
@@ -505,7 +505,7 @@ pre-commit run --all-files
 
 ## 版本说明
 
-- 当前仓库为 OpenManus 的衍生工程化版本（Leo）
+- 当前仓库为 OpenManus 的衍生工程化版本（OpenLeo）
 - 功能边界：保留上游能力，同时优先保证 BFF 可集成性与运行稳定性
 
 ## 致谢
@@ -514,3 +514,4 @@ pre-commit run --all-files
 - [MetaGPT](https://github.com/geekan/MetaGPT)
 - [browser-use](https://github.com/browser-use/browser-use)
 - [anthropic-computer-use](https://github.com/anthropics/anthropic-quickstarts/tree/main/computer-use-demo)
+

@@ -10,9 +10,15 @@ flowchart TD
     CS --> ST1[Store: 获取或创建 Session]
     ST1 --> ST2[Store: 写入 user message]
     ST2 --> BP[构建基础 Prompt<br/>输入 + Workspace + 历史 + 输出策略]
-    BP --> RT[ManusRuntime.ask]
-    RT --> AGI["初始化/复用 Agent<br/>Main LLM: glm-5"]
 
+    BP --> RG{RAG Prefetch 开启且命中知识型问题?}
+    RG -->|是| RS[RagRuntimeService.search<br/>topK/withRerank/minScore]
+    RS --> RC[[Knowledge Context 注入到 Prompt<br/>source/chunk/score + 片段截断]]
+    RG -->|否| SKIP[跳过 RAG Prefetch]
+    RC --> RT[ManusRuntime.ask]
+    SKIP --> RT
+
+    RT --> AGI["初始化/复用 Agent<br/>Main LLM: glm-5"]
     AGI --> PRE[预编译/预构建路由上下文<br/>提取 Current User Request + Intent 线索 + MCP Catalog]
     PRE --> RT0["Retriever (SQLite + FTS + Embedding)<br/>Embedding: BAAI/bge-small-zh-v1.5 (cuda fp16)<br/>召回 candidate_servers + candidate_tools + fallback"]
     RT0 --> PEN{Planner 开启}
@@ -30,8 +36,11 @@ flowchart TD
     CONN1 --> STEPS
     CONN2 --> STEPS
     STEPS[执行步骤并检查命中<br/>未命中可 retry 或 forced fallback] --> LOOP1[Agent 循环: PLAN -> ACT -> VERIFY]
+    LOOP1 --> FR{知识问答应触发但未触发 RAG?}
+    FR -->|是| RR[强制 RAG 重试<br/>mcp_rag_search]
+    FR -->|否| FIN
+    RR --> FIN
 
-    LOOP1 --> FIN
     FIN --> AST[得到最终 assistant 文本]
     AST --> SAVE[写入 assistant message + 会话持久化]
     SAVE --> MEM[异步 Memory Sync<br/>失败仅记录日志，不阻塞主流程]
@@ -44,12 +53,13 @@ flowchart TD
 
 ## 当前项目模型配置（与上图对应）
 
-截至 2026-03-16，你当前项目实际使用的模型如下：
+截至 2026-03-17，你当前项目实际使用的模型如下：
 
 - Main LLM（对话/执行）：`glm-5`（当前 active model 为 `glm-5`，与 `config/config.toml` 的 `[llm].model` 一致）
 - Planner LLM（严格 JSON 规划）：`glm-4.7-flashx`（`config/config.toml` 的 `[llm.planner].model`，不再回退默认模型）
 - Vision LLM（多模态/图像能力）：`glm-5`（`config/config.toml` 的 `[llm.vision].model`）
 - Tool Retrieval Embedding（工具向量召回）：`BAAI/bge-small-zh-v1.5`（`.env` 的 `BFF_MCP_TOOL_EMBEDDING_MODEL`），设备：`cuda`，dtype：`float16`
+- RAG Embedding（知识库向量）：`BAAI/bge-small-zh-v1.5`（`.env` 的 `RAG_EMBEDDING_MODEL`）
 - Feishu Audio ASR（语音转文字，可选）：`faster-whisper` 模型 `small`（`.env` 的 `FEISHU_AUDIO_ASR_MODEL`），设备：`cuda`（失败自动回退 `cpu`）
 
 对应代码与文档可参考：
@@ -63,83 +73,46 @@ flowchart TD
 - `bff/services/runtime/runtime_executor.py`
 - `bff/services/runtime/mcp_routing/runtime_mcp_router.py`
 
-## 示例：MCP 倾向提问如何落地为最终回复
+## 典型请求示例（含 RAG + MCP）
 
-用户问题（明显偏向 MCP）：
+以下示例可直接用于验证你当前工作流：
 
-`帮我查一下今天 AI 领域热点新闻，然后打开 B 站搜索“OpenManus”并告诉我前 3 个结果。`
+1. 个人知识问答（RAG Prefetch 主路径）
+- 用户请求：`我的工作风格是？`
+- 预期：`request.rag_prefetch: injected=True`，先拼接 `[Knowledge Context]`
+- 规划：通常 `need_mcp=false`（直接基于拼接上下文回答）
+- 兜底：若命中异常，可触发 `mcp_rag_search`
 
-这个请求会同时触发：
+2. 知识库约束问答（RAG Prefetch + 可选执行）
+- 用户请求：`根据我的知识库，帮我写一版做事原则`
+- 预期：RAG 命中你的 persona 文档片段并注入
+- 规划：多数情况下无需外部 MCP；若用户要求“写入文件/发布”，才进入工具执行
 
-- `web_search` 倾向（新闻/热点）
-- `browser_automation` 倾向（打开网站并操作）
+3. 热点检索 + 网页操作（多 MCP 典型链路）
+- 用户请求：`帮我查今天 AI 热点，再打开 B 站搜索 OpenLeo 前 3 条`
+- 预期：候选服务器包含 `trendradar` 与 `playwright`
+- 规划：`need_mcp=true`，按 step 顺序执行 `trendradar -> playwright`
+- 失败策略：step retry，必要时回退到 rule fallback
 
-Retriever（示意）会得到：
+4. GitHub 仓库运维（单 MCP 事务）
+- 用户请求：`列出这个仓库最近 10 次提交并创建一个 issue`
+- 预期：候选服务器优先 `github`
+- 规划：`need_mcp=true`，`list_commits -> create_issue`
+- 注意：Gatekeeper 校验 tool 白名单和参数结构
 
-```json
-{
-  "intent": "browser_automation",
-  "candidate_servers": ["trendradar", "playwright", "exa"],
-  "candidate_tools": {
-    "trendradar": ["get_latest_news", "search_news"],
-    "playwright": ["browser_navigate", "browser_type", "browser_click"],
-    "exa": ["search"]
-  },
-  "fallback": {
-    "mode": "rule_route",
-    "server_id": "trendradar",
-    "tool_name": "get_latest_news",
-    "reason": "retrieval fallback"
-  }
-}
-```
+5. 纯闲聊或非知识依赖请求（No-MCP）
+- 用户请求：`你好，今天怎么样`
+- 预期：`need_mcp=false`，不连接外部 MCP，不调用 RAG
+- 结果：直接模型回复，保持低延迟
 
-Planner LLM 返回的 MCP 计划 JSON（示例）：
+## 日志观察点（排障优先）
 
-```json
-{
-  "need_mcp": true,
-  "plan_steps": [
-    {
-      "goal": "获取今日 AI 热点新闻摘要",
-      "server_id": "trendradar",
-      "tool_name": "get_latest_news",
-      "args_hint": {
-        "topic": "AI",
-        "limit": 5
-      },
-      "confidence": 0.92,
-      "reason": "用户明确要求今日热点新闻"
-    },
-    {
-      "goal": "打开 B 站并搜索 OpenManus，提取前三条结果",
-      "server_id": "playwright",
-      "tool_name": "browser_navigate",
-      "args_hint": {
-        "url": "https://www.bilibili.com"
-      },
-      "confidence": 0.88,
-      "reason": "用户要求网页操作与结果提取"
-    }
-  ],
-  "fallback": {
-    "mode": "rule_route",
-    "server_id": "trendradar",
-    "tool_name": "get_latest_news",
-    "reason": "任一步骤失败时使用规则回退"
-  }
-}
-```
+当你排查“为什么没走 RAG/MCP”时，优先看：
 
-最终落地执行（简化）：
+- `MCP ROUTING`
+- `request.rag_prefetch`：是否注入、命中条数
+- `request.rag_prefetch.preview`：注入片段预览（截断）
+- `intent`：是否被判为 `general / knowledge_qa / browser_automation ...`
+- `execute.need_mcp`：本轮是否进入 MCP 执行
+- `fallback`：失败时走了哪条兜底路径
 
-1. Gatekeeper 校验 JSON 结构、server/tool 白名单、策略限制。
-2. `runtime_executor` 先连接 `trendradar`，执行新闻检索步骤。
-3. 再连接 `playwright`，执行网页打开与搜索步骤。
-4. 若某一步未命中预期工具，触发一次 `retry`；必要时走 `fallback`。
-5. `RuntimeFinalizer` 收敛为一条最终 assistant 文本。
-6. 若 `stream_true`，按 SSE 分片返回；否则一次性 JSON 返回。
-
-最终回复（示例）：
-
-`今天 AI 热点主要集中在多模态模型发布、AI Agent 工具链更新和推理成本优化三类。已在 B 站搜索 OpenManus，前 3 个结果分别是：...`

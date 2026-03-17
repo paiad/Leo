@@ -22,4 +22,5 @@ chat_service = ChatService(
     runtime=ManusRuntime(store=store),
     model_service=model_service,
     memory_sync=memory_sync_service,
+    rag_service=rag_service,
 )

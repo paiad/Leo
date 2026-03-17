@@ -9,8 +9,8 @@ const plusJakartaSans = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "Leo",
-  description: "Leo AI Agent 工作台前端",
+  title: "OpenLeo",
+  description: "OpenLeo AI Agent 工作台前端",
   icons: {
     icon: "/Leo.png",
     shortcut: "/Leo.png",

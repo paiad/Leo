@@ -55,6 +55,56 @@ class RuntimeMcpPlanningOrchestrator:
             return value
         return f"{value[:limit]}...<truncated>"
 
+    @staticmethod
+    def _rag_prefetch_log_field(prompt: str) -> str:
+        """
+        Inspect runtime prompt and summarize whether RAG prefetch context was injected.
+        """
+        text = str(prompt or "")
+        if not text:
+            return "injected=False, hits=0"
+
+        marker = "[Knowledge Context]"
+        if marker not in text:
+            return "injected=False, hits=0"
+
+        try:
+            # Count lines like: [1] source=... chunk=... score=...
+            hit_count = sum(
+                1
+                for line in text.splitlines()
+                if line.strip().startswith("[")
+                and "] source=" in line
+                and "chunk=" in line
+                and "score=" in line
+            )
+        except Exception:
+            hit_count = 0
+        return f"injected=True, hits={max(0, int(hit_count))}"
+
+    @classmethod
+    def _rag_prefetch_preview_field(cls, prompt: str, *, limit: int = 320) -> str:
+        text = str(prompt or "")
+        marker = "[Knowledge Context]"
+        if marker not in text:
+            return "-"
+
+        start = text.find(marker)
+        if start < 0:
+            return "-"
+
+        # RAG prefetch block is placed before history/current-request blocks.
+        end_candidates = []
+        for sep in ("\n\n[Recent Session Context]", "\n\n[Current User Request]"):
+            idx = text.find(sep, start)
+            if idx > start:
+                end_candidates.append(idx)
+        end = min(end_candidates) if end_candidates else len(text)
+
+        block = text[start:end].strip()
+        compact = " ".join(block.split())
+        return cls._truncate_for_log(compact, limit=limit)
+
     def _serialize_plan_for_log(self, plan: PlannerOutput | None) -> str:
         if plan is None:
             return "-"
@@ -82,6 +132,8 @@ class RuntimeMcpPlanningOrchestrator:
         self,
         *,
         request_preview: str,
+        rag_prefetch_field: str,
+        rag_prefetch_preview: str,
         retrieval: RetrievalResult,
         planner_enabled: bool,
         strict_json: bool,
@@ -99,6 +151,8 @@ class RuntimeMcpPlanningOrchestrator:
         fallback = execute_plan.fallback
         lines = [
             f"request: {request_preview or '<empty>'}",
+            f"request.rag_prefetch: {rag_prefetch_field}",
+            f"request.rag_prefetch.preview: {rag_prefetch_preview}",
             f"intent: {retrieval.intent}",
             f"retrieval.candidates: {retrieval.candidate_servers or []}",
             (
@@ -175,6 +229,8 @@ class RuntimeMcpPlanningOrchestrator:
         prompt_text = self._router.normalized_current_user_request(prompt)
         prompt_hash = self._hash_prompt(prompt_text)
         request_preview = self._router.request_preview(prompt)
+        rag_prefetch_field = self._rag_prefetch_log_field(prompt)
+        rag_prefetch_preview = self._rag_prefetch_preview_field(prompt)
 
         if self._router.should_short_circuit_general_no_mcp(prompt):
             retrieval = RetrievalResult(
@@ -219,6 +275,8 @@ class RuntimeMcpPlanningOrchestrator:
             )
             self._log_routing_box(
                 request_preview=request_preview,
+                rag_prefetch_field=rag_prefetch_field,
+                rag_prefetch_preview=rag_prefetch_preview,
                 retrieval=retrieval,
                 planner_enabled=planner_enabled,
                 strict_json=strict_json,
@@ -310,6 +368,8 @@ class RuntimeMcpPlanningOrchestrator:
             )
             self._log_routing_box(
                 request_preview=request_preview,
+                rag_prefetch_field=rag_prefetch_field,
+                rag_prefetch_preview=rag_prefetch_preview,
                 retrieval=retrieval,
                 planner_enabled=planner_enabled,
                 strict_json=strict_json,
@@ -342,6 +402,8 @@ class RuntimeMcpPlanningOrchestrator:
             )
             self._log_routing_box(
                 request_preview=request_preview,
+                rag_prefetch_field=rag_prefetch_field,
+                rag_prefetch_preview=rag_prefetch_preview,
                 retrieval=retrieval,
                 planner_enabled=planner_enabled,
                 strict_json=strict_json,
@@ -423,6 +485,8 @@ class RuntimeMcpPlanningOrchestrator:
             )
             self._log_routing_box(
                 request_preview=request_preview,
+                rag_prefetch_field=rag_prefetch_field,
+                rag_prefetch_preview=rag_prefetch_preview,
                 retrieval=retrieval,
                 planner_enabled=planner_enabled,
                 strict_json=strict_json,
@@ -494,6 +558,8 @@ class RuntimeMcpPlanningOrchestrator:
             )
             self._log_routing_box(
                 request_preview=request_preview,
+                rag_prefetch_field=rag_prefetch_field,
+                rag_prefetch_preview=rag_prefetch_preview,
                 retrieval=retrieval,
                 planner_enabled=planner_enabled,
                 strict_json=strict_json,
@@ -531,6 +597,8 @@ class RuntimeMcpPlanningOrchestrator:
             )
             self._log_routing_box(
                 request_preview=request_preview,
+                rag_prefetch_field=rag_prefetch_field,
+                rag_prefetch_preview=rag_prefetch_preview,
                 retrieval=retrieval,
                 planner_enabled=planner_enabled,
                 strict_json=strict_json,
@@ -568,6 +636,8 @@ class RuntimeMcpPlanningOrchestrator:
         )
         self._log_routing_box(
             request_preview=request_preview,
+            rag_prefetch_field=rag_prefetch_field,
+            rag_prefetch_preview=rag_prefetch_preview,
             retrieval=retrieval,
             planner_enabled=planner_enabled,
             strict_json=strict_json,

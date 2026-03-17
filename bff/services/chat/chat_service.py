@@ -7,7 +7,7 @@ from collections import defaultdict
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import tiktoken
@@ -27,6 +27,9 @@ from bff.services.memory.memory_sync_service import MemorySyncService
 from bff.services.models.model_service import ModelService
 from bff.services.runtime.agent_runtime import AgentRuntime
 from bff.services.chat.context_memory_service import ContextMemoryService
+
+if TYPE_CHECKING:
+    from bff.services.rag.rag_service import RagRuntimeService
 
 
 def sse_event(event: str, payload: dict[str, Any]) -> str:
@@ -48,11 +51,13 @@ class ChatService:
         runtime: AgentRuntime,
         model_service: ModelService,
         memory_sync: MemorySyncService | None = None,
+        rag_service: "RagRuntimeService | None" = None,
     ):
         self._store = store
         self._runtime = runtime
         self._model_service = model_service
         self._memory_sync = memory_sync
+        self._rag_service = rag_service
         self._context_memory = ContextMemoryService(store=store)
         self._lock = asyncio.Lock()
         self._record_lock = asyncio.Lock()
@@ -160,6 +165,17 @@ class ChatService:
             return default
         return max(minimum, value)
 
+    @staticmethod
+    def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        try:
+            value = float(raw.strip())
+        except ValueError:
+            return default
+        return max(minimum, value)
+
     def _init_tokenizer(self):
         default_llm = config.llm.get("default")
         model_name = default_llm.model if default_llm else "gpt-4o-mini"
@@ -237,6 +253,161 @@ class ChatService:
     @staticmethod
     def _current_user_request_block(current_user_text: str) -> str:
         return f"[Current User Request]\n{current_user_text}"
+
+    @staticmethod
+    def _trim_path(path: str, max_len: int = 96) -> str:
+        value = (path or "").strip()
+        if len(value) <= max_len:
+            return value
+        return "..." + value[-(max_len - 3) :]
+
+    def _rag_prefetch_enabled(self) -> bool:
+        return self._is_truthy_env(os.getenv("BFF_RAG_PREFETCH_ENABLED", "1"))
+
+    def _should_prefetch_rag(self, user_text: str) -> bool:
+        if not self._rag_prefetch_enabled() or self._rag_service is None:
+            return False
+
+        text = (user_text or "").strip().lower()
+        if not text:
+            return False
+
+        negative_hints = {
+            "不要rag",
+            "不要知识库",
+            "不用rag",
+            "no rag",
+            "without rag",
+            "don't use rag",
+        }
+        if any(hint in text for hint in negative_hints):
+            return False
+
+        strong_hints = {
+            "根据我的",
+            "我的工作风格",
+            "我的做事原则",
+            "我的偏好",
+            "我的画像",
+            "知识库",
+            "基于文档",
+            "根据资料",
+            "结合资料",
+            "from my knowledge base",
+            "based on my docs",
+        }
+        if any(hint in text for hint in strong_hints):
+            return True
+
+        knowledge_qa_hints = {
+            "是什么",
+            "什么意思",
+            "定义",
+            "概念",
+            "区别",
+            "对比",
+            "总结",
+            "梳理",
+            "有哪些",
+            "解释",
+            "explain",
+            "what is",
+            "definition",
+            "difference",
+            "summarize",
+        }
+        return any(hint in text for hint in knowledge_qa_hints)
+
+    def _build_rag_prefetch_context(self, *, user_text: str) -> str:
+        if self._rag_service is None:
+            return ""
+
+        query = (user_text or "").strip()
+        if not query:
+            return ""
+
+        top_k = self._env_int("BFF_RAG_PREFETCH_TOPK", 5, minimum=1)
+        with_rerank = self._is_truthy_env(os.getenv("BFF_RAG_PREFETCH_WITH_RERANK", "1"))
+        min_score = self._env_float("BFF_RAG_PREFETCH_MIN_SCORE", 0.08, minimum=0.0)
+        max_chars = self._env_int("BFF_RAG_PREFETCH_MAX_CHARS", 3000, minimum=500)
+        per_hit_limit = self._env_int("BFF_RAG_PREFETCH_PER_HIT_MAX_CHARS", 900, minimum=160)
+
+        try:
+            result = self._rag_service.search(
+                query=query,
+                top_k=top_k,
+                with_rerank=with_rerank,
+            )
+        except Exception as exc:
+            logger.warning(f"RAG prefetch failed: {exc}")
+            return ""
+
+        raw_hits = result.get("hits", []) if isinstance(result, dict) else []
+        if not isinstance(raw_hits, list) or not raw_hits:
+            logger.info("RAG prefetch: no hits")
+            return ""
+
+        filtered_hits: list[dict[str, Any]] = []
+        for hit in raw_hits:
+            if not isinstance(hit, dict):
+                continue
+            score = hit.get("score")
+            if isinstance(score, (int, float)) and float(score) < min_score:
+                continue
+            filtered_hits.append(hit)
+
+        if not filtered_hits:
+            logger.info(
+                f"RAG prefetch: all hits filtered by min_score={min_score:.4f}, raw_hits={len(raw_hits)}"
+            )
+            return ""
+
+        lines = [
+            "[Knowledge Context]",
+            "- Retrieved from RAG before tool planning. Prefer this context when answering.",
+        ]
+
+        consumed = 0
+        included = 0
+        for index, hit in enumerate(filtered_hits, start=1):
+            if included >= top_k or consumed >= max_chars:
+                break
+            text = str(hit.get("text") or "").strip()
+            if not text:
+                continue
+
+            remaining_total = max_chars - consumed
+            if remaining_total <= 0:
+                break
+            current_limit = min(per_hit_limit, remaining_total)
+            snippet = text[:current_limit].rstrip()
+            if len(text) > current_limit:
+                snippet += "…"
+
+            source_path = self._trim_path(str(hit.get("source_path") or "unknown"))
+            chunk_index = hit.get("chunk_index")
+            score = hit.get("score")
+            if isinstance(score, (int, float)):
+                score_text = f"{float(score):.4f}"
+            else:
+                score_text = "n/a"
+            chunk_text = str(chunk_index) if chunk_index is not None else "n/a"
+            lines.append(
+                f"[{index}] source={source_path} chunk={chunk_text} score={score_text}"
+            )
+            lines.append(snippet)
+            consumed += len(snippet)
+            included += 1
+
+        if included <= 0:
+            return ""
+
+        logger.info(
+            "RAG prefetch: "
+            f"query='{query[:72]}', raw_hits={len(raw_hits)}, included={included}, "
+            f"top_k={top_k}, with_rerank={with_rerank}, min_score={min_score:.4f}"
+        )
+        return "\n".join(lines)
 
     def _format_history_context(self, session: SessionRecord, current_user_text: str) -> str:
         messages = session.messages
@@ -322,6 +493,10 @@ class ChatService:
         if output_policy:
             current_request_text = f"{current_request_text}\n\n{output_policy}"
 
+        rag_prefetch_text = ""
+        if self._should_prefetch_rag(user_text):
+            rag_prefetch_text = self._build_rag_prefetch_context(user_text=user_text)
+
         context_bundle = self._context_memory.build_context_bundle(
             session_id=session.id,
             current_user_text=current_request_text,
@@ -335,9 +510,13 @@ class ChatService:
             )
 
         prompt_with_history = self._format_history_context(session, current_request_text)
+        prompt_blocks: list[str] = []
+        if rag_prefetch_text:
+            prompt_blocks.append(rag_prefetch_text)
         if context_bundle.text:
-            return f"{context_bundle.text}\n\n{prompt_with_history}"
-        return prompt_with_history
+            prompt_blocks.append(context_bundle.text)
+        prompt_blocks.append(prompt_with_history)
+        return "\n\n".join(prompt_blocks)
 
     def _source_key(self, source: str) -> str:
         return "lark" if source == "lark" else "browser"

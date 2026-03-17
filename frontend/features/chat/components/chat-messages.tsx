@@ -35,7 +35,7 @@ const roleBadge = {
     bubbleClass: "bg-slate-700 border-slate-700 text-white",
   },
   assistant: {
-    label: "Leo",
+    label: "OpenLeo",
     icon: Bot,
     bubbleClass: "bg-white border-slate-200 text-slate-800",
   },
@@ -464,7 +464,7 @@ export function ChatMessages({
           <article className="mb-4 space-y-2">
             <div className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
               <Bot className="h-3.5 w-3.5" />
-              {loadingModel ? `Leo | ${loadingModel}` : "Leo"}
+              {loadingModel ? `OpenLeo | ${loadingModel}` : "OpenLeo"}
               {toolCallTime ? (
                 <span className="text-slate-400">{formatShanghaiTimeToMinute(toolCallTime)}</span>
               ) : null}
@@ -483,7 +483,7 @@ export function ChatMessages({
           <article className="flex flex-col items-start gap-2">
             <div className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
               <Bot className="h-3.5 w-3.5" />
-              {loadingModel ? `Leo | ${loadingModel}` : "Leo"}
+              {loadingModel ? `OpenLeo | ${loadingModel}` : "OpenLeo"}
               {loadingTime ? (
                 <span className="text-slate-400">{formatShanghaiTimeToMinute(loadingTime)}</span>
               ) : null}

@@ -1,4 +1,4 @@
-# Leo BFF
+# OpenLeo BFF
 
 兼容 `frontend` 的后端适配层，采用分层结构以便后续替换实现（数据库、A2A、飞书适配）。
 
@@ -127,7 +127,7 @@ FEISHU_REPLY_ONLY_WHEN_MENTIONED=true
 行为说明：
 
 - 支持 `url_verification`（返回 `challenge`）。
-- 监听 `im.message.receive_v1` 并调用 OpenManus ChatService。
+- 监听 `im.message.receive_v1` 并调用 OpenLeo ChatService。
 - 使用 `message_id` 做去重，避免重复推送导致重复回复。
 - 默认处理文本消息；`audio` 语音消息会尝试本地 ASR（faster-whisper）转写后再交给模型。
 - 未识别成功时，语音消息会提示“语音识别失败，请重试或改发文字。”。
@@ -158,3 +158,4 @@ FEISHU_AUDIO_ASR_HF_CACHE_DIR=D:\cache\huggingface
 
 - Python 包：`faster-whisper`
 - 系统命令：`ffmpeg`（用于将飞书音频转成 16k mono wav）
+
